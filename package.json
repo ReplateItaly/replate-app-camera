@@ -1,6 +1,6 @@
 {
   "name": "replate-camera",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Camera component for Replate Manager",
   "main": "lib/commonjs/index",
   "module": "lib/module/index",
