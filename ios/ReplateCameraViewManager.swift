@@ -668,6 +668,45 @@ class ReplateCameraController: NSObject {
     ReplateCameraView.INSTANCE.reset()
   }
 
+  func isAnchorNodeValid(_ anchorNode: AnchorEntity) -> Bool {
+      // Check if the transform is initialized
+      let transform = anchorNode.transform
+      if(transform == nil){
+          print("Transform is not initialized.")
+          return false
+      }
+
+      // Check position, rotation, and scale
+      let position = transform.translation
+      let rotation = transform.rotation
+      let scale = transform.scale
+
+      // Validate position, rotation, and scale
+      guard !position.isNaN else {
+          print("Position contains NaN values.")
+          return false
+      }
+
+      guard !rotation.isNaN else {
+          print("Rotation contains NaN values.")
+          return false
+      }
+
+      guard scale != SIMD3<Float>(0, 0, 0) else {
+          print("Scale is zero.")
+          return false
+      }
+
+      // Additional check to ensure the rotation quaternion is normalized
+      guard abs(length(rotation.vector) - 1.0) < 0.0001 else {
+          print("Rotation quaternion is not normalized.")
+          return false
+      }
+
+      // All checks passed
+      return true
+  }
+
   @objc(takePhoto:resolver:rejecter:)
   func takePhoto(_ unlimited: Bool = false, resolver: @escaping RCTPromiseResolveBlock, rejecter: @escaping RCTPromiseRejectBlock) {
     var hasCalledBack = false
@@ -695,16 +734,30 @@ class ReplateCameraController: NSObject {
         safeRejecter("001", "[ReplateCameraController] No anchor set yet", NSError(domain: "ReplateCameraController", code: 001, userInfo: nil))
         return
       }
-
-      let anchorPosition = anchorNode.transform.translation
-
+      var anchorPosition: SIMD3<Float>? = nil
+      if(!Thread.isMainThread){
+        DispatchQueue.main.sync {
+          if isAnchorNodeValid(anchorNode) {
+            anchorPosition = anchorNode.position(relativeTo: nil)
+            print("Anchor position in world space: \(anchorPosition)")
+          } else {
+            print("AnchorNode is not valid.")
+            safeRejecter("001", "[ReplateCameraController] AnchorNode is not valid.", NSError(domain: "ReplateCameraController", code: 001, userInfo: nil))
+            return
+          }
+        }
+      }
+      guard let anchorPosition else {
+        safeRejecter("001", "[ReplateCameraController] No anchor set yet", NSError(domain: "ReplateCameraController", code: 001, userInfo: nil))
+        return
+      }
       let spheresHeight = ReplateCameraView.spheresHeight
       let distanceBetweenCircles = ReplateCameraView.distanceBetweenCircles
       let point1Y = anchorPosition.y + spheresHeight
       let point2Y = anchorPosition.y + distanceBetweenCircles + spheresHeight
       let twoThirdsDistance = spheresHeight + distanceBetweenCircles + distanceBetweenCircles/5
       var deviceTargetInFocus = -1
-      let angleThreshold: Float = 0.8
+      let angleThreshold: Float = 0.6
       var relativeCameraTransform: simd_float4x4
       if let cameraTransform = ReplateCameraView.arView.session.currentFrame?.camera.transform {
         relativeCameraTransform = ReplateCameraController.getTransformRelativeToAnchor(anchor: anchorNode, cameraTransform: cameraTransform)
@@ -968,13 +1021,13 @@ class ReplateCameraController: NSObject {
         }
       }
     }
-    
+
     switch cameraDistance{
     case 1:
 //      showAlert("TOO FAR")
       print("TOO FAR")
       break;
-    
+
     case -1:
 //      showAlert("TOO CLOSE")
       print("TOO CLOSE")
@@ -1210,5 +1263,17 @@ extension UIColor {
 public extension simd_float2 {
   static func -(lhs: simd_float2, rhs: simd_float2) -> simd_float2 {
     return simd_float2(lhs.x - rhs.x, lhs.y - rhs.y)
+  }
+}
+
+public extension SIMD3 where Scalar == Float {
+  var isNaN: Bool {
+    return x.isNaN || y.isNaN || z.isNaN
+  }
+}
+
+public extension simd_quatf {
+  var isNaN: Bool {
+    return vector.x.isNaN || vector.y.isNaN || vector.w.isNaN
   }
 }
