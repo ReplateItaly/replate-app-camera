@@ -803,10 +803,15 @@ class ReplateCameraController: NSObject {
 
     private func getValidAnchorEntity() throws -> AnchorEntity {
         var anchorEntity: AnchorEntity?
+      if(Thread.isMainThread){
+        anchorEntity = ReplateCameraView.anchorEntity
 
+      }else{
         DispatchQueue.main.sync {
-            anchorEntity = ReplateCameraView.anchorEntity
+          anchorEntity = ReplateCameraView.anchorEntity
         }
+      }
+
 
         guard let anchor = anchorEntity else {
             throw ARError.noAnchor
@@ -828,9 +833,15 @@ class ReplateCameraController: NSObject {
         let relativeCameraTransform = getTransformRelativeToAnchor(anchor: anchorEntity, cameraTransform: cameraTransform)
 
         var anchorPosition: SIMD3<Float>!
+      if(Thread.isMainThread){
+        anchorPosition = anchorEntity.position(relativeTo: nil)
+
+      }else{
         DispatchQueue.main.sync {
-            anchorPosition = anchorEntity.position(relativeTo: nil)
+          anchorPosition = anchorEntity.position(relativeTo: nil)
         }
+      }
+
 
         let cameraPosition = SIMD3<Float>(cameraTransform.columns.3.x, cameraTransform.columns.3.y, cameraTransform.columns.3.z)
         let deviceDirection = normalize(SIMD3<Float>(-cameraTransform.columns.2.x, -cameraTransform.columns.2.y, -cameraTransform.columns.2.z))
@@ -925,21 +936,21 @@ class ReplateCameraController: NSObject {
 
   private func processAndSaveImage(_ pixelBuffer: CVPixelBuffer, callbackHandler: SafeCallbackHandler) {
     let ciImage = CIImage(cvImageBuffer: pixelBuffer)
-    
+
     guard let resizedImage = resizeImage(ciImage, to: Self.TARGET_IMAGE_SIZE),
           let cgImage = cgImage(from: resizedImage) else {
       callbackHandler.reject(.processingError)
       return
     }
-    
+
     let uiImage = UIImage(cgImage: cgImage)
     let rotatedImage = uiImage.rotate(radians: .pi / 2)
-    
+
     guard let savedURL = saveImageAsJPEG(rotatedImage) else {
       callbackHandler.reject(.processingError)
       return
     }
-    
+
     callbackHandler.resolve(savedURL.absoluteString)
   }
 
@@ -1098,17 +1109,30 @@ class ReplateCameraController: NSObject {
     // MARK: - Anchor Validation
     func isAnchorNodeValid(_ anchorNode: AnchorEntity) -> Bool {
         var isValid = false
-        DispatchQueue.main.sync {
-            let transform = anchorNode.transform
-            let position = transform.translation
-            let rotation = transform.rotation
-            let scale = transform.scale
+      if(Thread.isMainThread){
+        let transform = anchorNode.transform
+        let position = transform.translation
+        let rotation = transform.rotation
+        let scale = transform.scale
 
-            isValid = !position.isNaN &&
-                     !rotation.isNaN &&
-                     scale != SIMD3<Float>(0, 0, 0) &&
-                     abs(length(rotation.vector) - 1.0) < 0.0001
+        isValid = !position.isNaN &&
+        !rotation.isNaN &&
+        scale != SIMD3<Float>(0, 0, 0) &&
+        abs(length(rotation.vector) - 1.0) < 0.0001
+      }else{
+        DispatchQueue.main.sync {
+          let transform = anchorNode.transform
+          let position = transform.translation
+          let rotation = transform.rotation
+          let scale = transform.scale
+
+          isValid = !position.isNaN &&
+          !rotation.isNaN &&
+          scale != SIMD3<Float>(0, 0, 0) &&
+          abs(length(rotation.vector) - 1.0) < 0.0001
         }
+      }
+
         return isValid
     }
 
@@ -1116,16 +1140,36 @@ class ReplateCameraController: NSObject {
     func isCameraWithinRange(cameraTransform: simd_float4x4, anchorEntity: AnchorEntity) -> Int {
         var distance: Float = 0
 
-        DispatchQueue.main.sync {
+      if(Thread.isMainThread){
+        let cameraPosition = SIMD3<Float>(
+          cameraTransform.columns.3.x,
+          cameraTransform.columns.3.y,
+          cameraTransform.columns.3.z
+        )
+        let anchorPosition = anchorEntity.transform.translation
+        distance = distanceBetween(cameraPosition, anchorPosition)
+      }else{
+        if(Thread.isMainThread){
+          let cameraPosition = SIMD3<Float>(
+            cameraTransform.columns.3.x,
+            cameraTransform.columns.3.y,
+            cameraTransform.columns.3.z
+          )
+          let anchorPosition = anchorEntity.transform.translation
+          distance = distanceBetween(cameraPosition, anchorPosition)
+        }else{
+          DispatchQueue.main.sync {
             let cameraPosition = SIMD3<Float>(
-                cameraTransform.columns.3.x,
-                cameraTransform.columns.3.y,
-                cameraTransform.columns.3.z
+              cameraTransform.columns.3.x,
+              cameraTransform.columns.3.y,
+              cameraTransform.columns.3.z
             )
             let anchorPosition = anchorEntity.transform.translation
             distance = distanceBetween(cameraPosition, anchorPosition)
+          }
         }
 
+      }
         return distance <= Self.MIN_DISTANCE ? -1 :
                distance >= Self.MAX_DISTANCE ? 1 : 0
     }
@@ -1138,42 +1182,71 @@ class ReplateCameraController: NSObject {
     // MARK: - Static Utility Methods
    func getTransformRelativeToAnchor(anchor: AnchorEntity, cameraTransform: simd_float4x4) -> simd_float4x4 {
         var relativeTransform: simd_float4x4!
-        DispatchQueue.main.sync {
-            let anchorTransform = anchor.transformMatrix(relativeTo: nil)
-            relativeTransform = anchorTransform.inverse * cameraTransform
-        }
+     if(Thread.isMainThread){
+       let anchorTransform = anchor.transformMatrix(relativeTo: nil)
+       relativeTransform = anchorTransform.inverse * cameraTransform
+     }else{
+       DispatchQueue.main.sync {
+         let anchorTransform = anchor.transformMatrix(relativeTo: nil)
+         relativeTransform = anchorTransform.inverse * cameraTransform
+       }
+     }
         return relativeTransform
     }
 
    func angleBetweenAnchorXAndCamera(anchor: AnchorEntity, cameraTransform: simd_float4x4) -> Float {
         var angleDegrees: Float = 0
+     if(Thread.isMainThread){
+       let anchorTransform = anchor.transform.matrix
+       let anchorPositionXZ = simd_float2(
+        anchor.transform.translation.x,
+        anchor.transform.translation.z
+       )
+       let relativeCameraPositionXZ = simd_float2(
+        cameraTransform.columns.3.x,
+        cameraTransform.columns.3.z
+       )
 
-        DispatchQueue.main.sync {
-            let anchorTransform = anchor.transform.matrix
-            let anchorPositionXZ = simd_float2(
-                anchor.transform.translation.x,
-                anchor.transform.translation.z
-            )
-            let relativeCameraPositionXZ = simd_float2(
-                cameraTransform.columns.3.x,
-                cameraTransform.columns.3.z
-            )
+       let directionXZ = relativeCameraPositionXZ - anchorPositionXZ
+       let anchorXAxisXZ = simd_float2(
+        anchorTransform.columns.0.x,
+        anchorTransform.columns.0.z
+       )
 
-            let directionXZ = relativeCameraPositionXZ - anchorPositionXZ
-            let anchorXAxisXZ = simd_float2(
-                anchorTransform.columns.0.x,
-                anchorTransform.columns.0.z
-            )
+       let angle = atan2(directionXZ.y, directionXZ.x) -
+       atan2(anchorXAxisXZ.y, anchorXAxisXZ.x)
 
-            let angle = atan2(directionXZ.y, directionXZ.x) -
-                       atan2(anchorXAxisXZ.y, anchorXAxisXZ.x)
+       angleDegrees = angle * (180.0 / .pi)
+       if angleDegrees < 0 {
+         angleDegrees += 360
+       }
+     }else{
+       DispatchQueue.main.sync {
+         let anchorTransform = anchor.transform.matrix
+         let anchorPositionXZ = simd_float2(
+          anchor.transform.translation.x,
+          anchor.transform.translation.z
+         )
+         let relativeCameraPositionXZ = simd_float2(
+          cameraTransform.columns.3.x,
+          cameraTransform.columns.3.z
+         )
 
-            angleDegrees = angle * (180.0 / .pi)
-            if angleDegrees < 0 {
-                angleDegrees += 360
-            }
-        }
+         let directionXZ = relativeCameraPositionXZ - anchorPositionXZ
+         let anchorXAxisXZ = simd_float2(
+          anchorTransform.columns.0.x,
+          anchorTransform.columns.0.z
+         )
 
+         let angle = atan2(directionXZ.y, directionXZ.x) -
+         atan2(anchorXAxisXZ.y, anchorXAxisXZ.x)
+
+         angleDegrees = angle * (180.0 / .pi)
+         if angleDegrees < 0 {
+           angleDegrees += 360
+         }
+       }
+     }
         return angleDegrees
     }
 
@@ -1240,7 +1313,7 @@ class ReplateCameraController: NSObject {
         """
     }
 }
-                             
+
 extension ARView: ARCoachingOverlayViewDelegate {
   func addCoaching() {
     print("ADD COACHING")
