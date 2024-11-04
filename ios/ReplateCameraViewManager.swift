@@ -1255,49 +1255,59 @@ class ReplateCameraController: NSObject {
         return context.createCGImage(ciImage, from: ciImage.extent)
     }
 
-    func saveImageAsJPEG(_ image: UIImage) -> URL? {
-        let cameraTransform = getCameraTransformString(from: ReplateCameraView.arView.session)
-
-        guard let imageData = image.jpegData(compressionQuality: 1),
-              let source = CGImageSourceCreateWithData(imageData as CFData, nil) else {
-            return nil
-        }
-
-        let temporaryDirectoryURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-        let uniqueFilename = "image_\(Date().timeIntervalSince1970).jpg"
-        let fileURL = temporaryDirectoryURL.appendingPathComponent(uniqueFilename)
-
-        guard let imageProperties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else {
-            return nil
-        }
-
-        var mutableMetadata = imageProperties
-        mutableMetadata[kCGImagePropertyExifDictionary] = [
-            kCGImagePropertyExifUserComment: cameraTransform
-        ]
-
-        guard let destination = CGImageDestinationCreateWithURL(
-            fileURL as CFURL,
-            kUTTypeJPEG,
-            1,
-            nil
-        ) else {
-            return nil
-        }
-
-        CGImageDestinationAddImageFromSource(
-            destination,
-            source,
-            0,
-            mutableMetadata as CFDictionary
-        )
-
-        guard CGImageDestinationFinalize(destination) else {
-            return nil
-        }
-
-        return fileURL
+  func saveImageAsJPEG(_ image: UIImage) -> URL? {
+    let cameraTransform = getCameraTransformString(from: ReplateCameraView.arView.session)
+    let gravityVector = getGravityVectorString(from: ReplateCameraView.arView.session)
+    
+    guard let imageData = image.jpegData(compressionQuality: 1),
+          let source = CGImageSourceCreateWithData(imageData as CFData, nil) else {
+      return nil
     }
+    
+    let temporaryDirectoryURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+    let uniqueFilename = "image_\(Date().timeIntervalSince1970).jpg"
+    let fileURL = temporaryDirectoryURL.appendingPathComponent(uniqueFilename)
+    
+    guard let imageProperties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else {
+      return nil
+    }
+    
+    var mutableMetadata = imageProperties
+    mutableMetadata[kCGImagePropertyExifDictionary] = [
+      kCGImagePropertyExifUserComment: "\(cameraTransform ?? "")|\(gravityVector)"
+    ]
+    
+    guard let destination = CGImageDestinationCreateWithURL(
+      fileURL as CFURL,
+      kUTTypeJPEG,
+      1,
+      nil
+    ) else {
+      return nil
+    }
+    
+    CGImageDestinationAddImageFromSource(
+      destination,
+      source,
+      0,
+      mutableMetadata as CFDictionary
+    )
+    
+    guard CGImageDestinationFinalize(destination) else {
+      return nil
+    }
+    
+    return fileURL
+  }
+  
+  func getGravityVectorString(from session: ARSession) -> String? {
+    guard let currentFrame = session.currentFrame else {
+      return nil
+    }
+    
+    let gravityVector = currentFrame.camera.eulerAngles // gravity vector is in Euler angles (x, y, z)
+    return "\(gravityVector.x),\(gravityVector.y),\(gravityVector.z)"
+  }
 
     func getCameraTransformString(from session: ARSession) -> String? {
         guard let currentFrame = session.currentFrame else {
