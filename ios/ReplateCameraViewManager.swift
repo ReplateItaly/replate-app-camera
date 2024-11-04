@@ -1256,9 +1256,6 @@ class ReplateCameraController: NSObject {
     }
 
   func saveImageAsJPEG(_ image: UIImage) -> URL? {
-    let cameraTransform = getCameraTransformString(from: ReplateCameraView.arView.session)
-    let gravityVector = getGravityVectorString(from: ReplateCameraView.arView.session)
-    
     guard let imageData = image.jpegData(compressionQuality: 1),
           let source = CGImageSourceCreateWithData(imageData as CFData, nil) else {
       return nil
@@ -1274,7 +1271,7 @@ class ReplateCameraController: NSObject {
     
     var mutableMetadata = imageProperties
     mutableMetadata[kCGImagePropertyExifDictionary] = [
-      kCGImagePropertyExifUserComment: "\(cameraTransform ?? "")|\(gravityVector)"
+      kCGImagePropertyExifUserComment: getTransformJSON(session: ReplateCameraView.arView.session)
     ]
     
     guard let destination = CGImageDestinationCreateWithURL(
@@ -1300,28 +1297,65 @@ class ReplateCameraController: NSObject {
     return fileURL
   }
   
-  func getGravityVectorString(from session: ARSession) -> String? {
-    guard let currentFrame = session.currentFrame else {
-      return nil
+  func getTransformJSON(session: ARSession) -> String {
+    let transform = session.currentFrame?.camera.transform ?? simd_float4x4()
+    // Extract translation
+    let translation = [
+      "x": transform.columns.3.x,
+      "y": transform.columns.3.y,
+      "z": transform.columns.3.z
+    ]
+    
+    // Extract scale by calculating the length of each column vector
+    let scale = [
+      "x": simd_length(simd_float3(transform.columns.0.x, transform.columns.0.y, transform.columns.0.z)),
+      "y": simd_length(simd_float3(transform.columns.1.x, transform.columns.1.y, transform.columns.1.z)),
+      "z": simd_length(simd_float3(transform.columns.2.x, transform.columns.2.y, transform.columns.2.z))
+    ]
+    
+    // Extract rotation by normalizing each axis and converting it into a 3x3 rotation matrix
+    let rotationMatrix = simd_float3x3(columns: (
+      simd_float3(transform.columns.0.x / scale["x"]!, transform.columns.0.y / scale["x"]!, transform.columns.0.z / scale["x"]!),
+      simd_float3(transform.columns.1.x / scale["y"]!, transform.columns.1.y / scale["y"]!, transform.columns.1.z / scale["y"]!),
+      simd_float3(transform.columns.2.x / scale["z"]!, transform.columns.2.y / scale["z"]!, transform.columns.2.z / scale["z"]!)
+    ))
+    
+    // Convert rotation matrix to quaternion
+    let quaternion = simd_quatf(rotationMatrix)
+    let rotation = [
+      "x": quaternion.vector.x,
+      "y": quaternion.vector.y,
+      "z": quaternion.vector.z,
+      "w": quaternion.vector.w
+    ]
+    
+    // Get the gravity vector from the AR session
+    var gravityVector: [String: Any] = [:]
+    if let currentFrame = session.currentFrame {
+      let gravityEulerAngles = currentFrame.camera.eulerAngles
+      gravityVector = [
+        "x": gravityEulerAngles.x,
+        "y": gravityEulerAngles.y,
+        "z": gravityEulerAngles.z
+      ]
     }
     
-    let gravityVector = currentFrame.camera.eulerAngles // gravity vector is in Euler angles (x, y, z)
-    return "\(gravityVector.x),\(gravityVector.y),\(gravityVector.z)"
-  }
-
-    func getCameraTransformString(from session: ARSession) -> String? {
-        guard let currentFrame = session.currentFrame else {
-            return nil
-        }
-
-        let transform = currentFrame.camera.transform
-        return """
-        \(transform.columns.0.x),\(transform.columns.0.y),\(transform.columns.0.z),\(transform.columns.0.w);
-        \(transform.columns.1.x),\(transform.columns.1.y),\(transform.columns.1.z),\(transform.columns.1.w);
-        \(transform.columns.2.x),\(transform.columns.2.y),\(transform.columns.2.z),\(transform.columns.2.w);
-        \(transform.columns.3.x),\(transform.columns.3.y),\(transform.columns.3.z),\(transform.columns.3.w)
-        """
+    // Format as JSON
+    let jsonObject: [String: Any] = [
+      "translation": translation,
+      "rotation": rotation,
+      "scale": scale,
+      "gravityVector": gravityVector
+    ]
+    
+    // Convert dictionary to JSON string
+    if let jsonData = try? JSONSerialization.data(withJSONObject: jsonObject, options: .prettyPrinted),
+       let jsonString = String(data: jsonData, encoding: .utf8) {
+      return jsonString
+    } else {
+      return "{}"  // Return empty JSON if conversion fails
     }
+  }
 }
 
 extension ARView: ARCoachingOverlayViewDelegate {
