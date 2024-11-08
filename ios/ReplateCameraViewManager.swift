@@ -909,8 +909,10 @@ class ReplateCameraController: NSObject {
         switch distance {
         case 1:
             ReplateCameraController.tooFarCallback?([])
+          ReplateCameraController.tooFarCallback = nil
         case -1:
             ReplateCameraController.tooCloseCallback?([])
+            ReplateCameraController.tooCloseCallback = nil
         default:
             break
         }
@@ -1260,20 +1262,20 @@ class ReplateCameraController: NSObject {
           let source = CGImageSourceCreateWithData(imageData as CFData, nil) else {
       return nil
     }
-    
+
     let temporaryDirectoryURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
     let uniqueFilename = "image_\(Date().timeIntervalSince1970).jpg"
     let fileURL = temporaryDirectoryURL.appendingPathComponent(uniqueFilename)
-    
+
     guard let imageProperties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else {
       return nil
     }
-    
+
     var mutableMetadata = imageProperties
     mutableMetadata[kCGImagePropertyExifDictionary] = [
       kCGImagePropertyExifUserComment: getTransformJSON(session: ReplateCameraView.arView.session)
     ]
-    
+
     guard let destination = CGImageDestinationCreateWithURL(
       fileURL as CFURL,
       kUTTypeJPEG,
@@ -1282,21 +1284,21 @@ class ReplateCameraController: NSObject {
     ) else {
       return nil
     }
-    
+
     CGImageDestinationAddImageFromSource(
       destination,
       source,
       0,
       mutableMetadata as CFDictionary
     )
-    
+
     guard CGImageDestinationFinalize(destination) else {
       return nil
     }
-    
+
     return fileURL
   }
-  
+
   func getTransformJSON(session: ARSession) -> String {
     let transform = session.currentFrame?.camera.transform ?? simd_float4x4()
     // Extract translation
@@ -1305,21 +1307,21 @@ class ReplateCameraController: NSObject {
       "y": transform.columns.3.y,
       "z": transform.columns.3.z
     ]
-    
+
     // Extract scale by calculating the length of each column vector
     let scale = [
       "x": simd_length(simd_float3(transform.columns.0.x, transform.columns.0.y, transform.columns.0.z)),
       "y": simd_length(simd_float3(transform.columns.1.x, transform.columns.1.y, transform.columns.1.z)),
       "z": simd_length(simd_float3(transform.columns.2.x, transform.columns.2.y, transform.columns.2.z))
     ]
-    
+
     // Extract rotation by normalizing each axis and converting it into a 3x3 rotation matrix
     let rotationMatrix = simd_float3x3(columns: (
       simd_float3(transform.columns.0.x / scale["x"]!, transform.columns.0.y / scale["x"]!, transform.columns.0.z / scale["x"]!),
       simd_float3(transform.columns.1.x / scale["y"]!, transform.columns.1.y / scale["y"]!, transform.columns.1.z / scale["y"]!),
       simd_float3(transform.columns.2.x / scale["z"]!, transform.columns.2.y / scale["z"]!, transform.columns.2.z / scale["z"]!)
     ))
-    
+
     // Convert rotation matrix to quaternion
     let quaternion = simd_quatf(rotationMatrix)
     let rotation = [
@@ -1328,7 +1330,7 @@ class ReplateCameraController: NSObject {
       "z": quaternion.vector.z,
       "w": quaternion.vector.w
     ]
-    
+
     // Get the gravity vector from the AR session
     var gravityVector: [String: Any] = [:]
     if let currentFrame = session.currentFrame {
@@ -1339,7 +1341,7 @@ class ReplateCameraController: NSObject {
         "z": gravityEulerAngles.z
       ]
     }
-    
+
     // Format as JSON
     let jsonObject: [String: Any] = [
       "translation": translation,
@@ -1347,7 +1349,7 @@ class ReplateCameraController: NSObject {
       "scale": scale,
       "gravityVector": gravityVector
     ]
-    
+
     // Convert dictionary to JSON string
     if let jsonData = try? JSONSerialization.data(withJSONObject: jsonObject, options: .prettyPrinted),
        let jsonString = String(data: jsonData, encoding: .utf8) {
