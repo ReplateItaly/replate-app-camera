@@ -909,6 +909,20 @@ class ReplateCameraController: NSObject {
               callbackHandler.reject(.notInRange)
               return
             }
+            
+            guard let frame = ReplateCameraView.arView?.session.currentFrame else {
+              callbackHandler.reject(.captureError)
+              return
+            }
+            
+            // Check lighting conditions
+            if let lightEstimate = frame.lightEstimate {
+              guard lightEstimate.ambientIntensity >= Self.MIN_AMBIENT_INTENSITY else {
+                callbackHandler.reject(.lightingError)
+                return
+              }
+            }
+                    
             self.updateSpheres(
                 deviceTargetInfo: deviceTargetInfo,
                 cameraTransform: deviceTargetInfo.transform
@@ -918,7 +932,7 @@ class ReplateCameraController: NSObject {
                     return
                 }
 
-                self.captureAndProcessImage(callbackHandler: callbackHandler)
+                self.processAndSaveImage(frame.capturedImage, callbackHandler: callbackHandler)
             }
         }
     }
@@ -950,24 +964,6 @@ class ReplateCameraController: NSObject {
         default:
             return true
         }
-    }
-
-    // MARK: - Image Processing
-    private func captureAndProcessImage(callbackHandler: SafeCallbackHandler) {
-        guard let frame = ReplateCameraView.arView?.session.currentFrame else {
-            callbackHandler.reject(.captureError)
-            return
-        }
-
-        // Check lighting conditions
-        if let lightEstimate = frame.lightEstimate {
-            guard lightEstimate.ambientIntensity >= Self.MIN_AMBIENT_INTENSITY else {
-                callbackHandler.reject(.lightingError)
-                return
-            }
-        }
-
-        processAndSaveImage(frame.capturedImage, callbackHandler: callbackHandler)
     }
 
   private func processAndSaveImage(_ pixelBuffer: CVPixelBuffer, callbackHandler: SafeCallbackHandler) {
