@@ -625,6 +625,7 @@ enum ARError: Error {
     case savingError
     case transformError
     case lightingError
+    case notInRange
     case unknown
 
     var localizedDescription: String {
@@ -638,6 +639,7 @@ enum ARError: Error {
         case .savingError: return "[ReplateCameraController] Error saving photo"
         case .transformError: return "[ReplateCameraController] Camera transform data not available"
         case .lightingError: return "[ReplateCameraController] Image too dark"
+        case .notInRange: return "[ReplateCameraController] Camera not in range"
         case .unknown: return "[ReplateCameraController] Unknown error occurred"
         }
     }
@@ -902,8 +904,11 @@ class ReplateCameraController: NSObject {
             guard let self = self else { return }
 
             self.updateCircleFocus(targetIndex: deviceTargetInfo.targetIndex)
-            self.checkCameraDistance(deviceTargetInfo: deviceTargetInfo)
-
+            let isInRange = self.checkCameraDistance(deviceTargetInfo: deviceTargetInfo)
+            if !isInRange {
+              callbackHandler.reject(.notInRange)
+              return
+            }
             self.updateSpheres(
                 deviceTargetInfo: deviceTargetInfo,
                 cameraTransform: deviceTargetInfo.transform
@@ -927,7 +932,7 @@ class ReplateCameraController: NSObject {
         }
     }
 
-    private func checkCameraDistance(deviceTargetInfo: DeviceTargetInfo) {
+  private func checkCameraDistance(deviceTargetInfo: DeviceTargetInfo) -> Bool {
         let distance = isCameraWithinRange(
             cameraTransform: deviceTargetInfo.transform,
             anchorEntity: ReplateCameraView.anchorEntity!
@@ -936,12 +941,14 @@ class ReplateCameraController: NSObject {
         switch distance {
         case 1:
             ReplateCameraController.tooFarCallback?([])
-          ReplateCameraController.tooFarCallback = nil
+            ReplateCameraController.tooFarCallback = nil
+            return false
         case -1:
             ReplateCameraController.tooCloseCallback?([])
             ReplateCameraController.tooCloseCallback = nil
+            return false
         default:
-            break
+            return true
         }
     }
 
