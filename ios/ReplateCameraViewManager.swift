@@ -4,6 +4,7 @@ import UIKit
 import AVFoundation
 import ImageIO
 import MobileCoreServices
+import CoreMotion
 
 // MARK: - RCTViewManager
 @objc(ReplateCameraViewManager)
@@ -53,6 +54,8 @@ class ReplateCameraView: UIView, ARSessionDelegate {
   static var anchorEntity: AnchorEntity?
   static var model: Entity!
   static var sessionId: UUID!
+  static var motionManager: CMMotionManager!
+  static var gravityVector: [String : Double] = [:]
   static var INSTANCE: ReplateCameraView!
 
   // Scene Configuration
@@ -485,6 +488,7 @@ class ReplateCameraView: UIView, ARSessionDelegate {
         spheresHeight = 0.10
         dragSpeed = 7000
         dotAnchors.removeAll()
+        gravityVector = [:]
     }
 
     private static func setupNewARView() {
@@ -494,6 +498,12 @@ class ReplateCameraView: UIView, ARSessionDelegate {
         arView.backgroundColor = instance.hexStringToUIColor(hexColor: "#32a852")
         instance.addSubview(arView)
         arView.session.delegate = instance
+        motionManager = CMMotionManager()
+        if motionManager.isDeviceMotionAvailable {
+          ReplateCameraView.INSTANCE.startDeviceMotionUpdates()
+        } else {
+          print("Device motion is not available")
+        }
         setupAR()
     }
 
@@ -567,10 +577,12 @@ class ReplateCameraView: UIView, ARSessionDelegate {
 
   func sessionWasInterrupted(_ session: ARSession) {
     print("SESSION INTERRUPTED")
+    ReplateCameraView.motionManager.stopDeviceMotionUpdates()
   }
 
   func sessionInterruptionEnded(_ session: ARSession) {
     print("SESSION RESUMED")
+    ReplateCameraView.INSTANCE.startDeviceMotionUpdates()
   }
 
   func generateImpactFeedback(strength: UIImpactFeedbackGenerator.FeedbackStyle) {
@@ -580,6 +592,21 @@ class ReplateCameraView: UIView, ARSessionDelegate {
       impactFeedbackGenerator.impactOccurred()
     }catch{
       print("Error when sending feedback")
+    }
+  }
+  
+  func startDeviceMotionUpdates() {
+    ReplateCameraView.motionManager.deviceMotionUpdateInterval = 0.1 // Update interval in seconds
+    ReplateCameraView.motionManager.startDeviceMotionUpdates(to: .main) { (deviceMotion, error) in
+      if let deviceMotion = deviceMotion {
+        let gravity = deviceMotion.gravity
+        ReplateCameraView.gravityVector = [
+          "x": gravity.x,
+          "y": gravity.y,
+          "z": gravity.z
+        ]
+        print("Gravity vector: x = \(gravity.x), y = \(gravity.y), z = \(gravity.z)")
+      }
     }
   }
 
@@ -1331,23 +1358,12 @@ class ReplateCameraController: NSObject {
       "w": quaternion.vector.w
     ]
 
-    // Get the gravity vector from the AR session
-    var gravityVector: [String: Any] = [:]
-    if let currentFrame = session.currentFrame {
-      let gravityEulerAngles = currentFrame.camera.eulerAngles
-      gravityVector = [
-        "x": gravityEulerAngles.x,
-        "y": gravityEulerAngles.y,
-        "z": gravityEulerAngles.z
-      ]
-    }
-
     // Format as JSON
     let jsonObject: [String: Any] = [
       "translation": translation,
       "rotation": rotation,
       "scale": scale,
-      "gravityVector": gravityVector
+      "gravityVector": ReplateCameraView.gravityVector
     ]
 
     // Convert dictionary to JSON string
