@@ -707,7 +707,7 @@ class ReplateCameraController: NSObject {
     private static let MIN_DISTANCE: Float = 0.15
     private static let MAX_DISTANCE: Float = 0.65
     private static let ANGLE_THRESHOLD: Float = 0.6
-    private static let TARGET_IMAGE_SIZE = CGSize(width: 2048, height: 1556)
+    private static let TARGET_IMAGE_SIZE = CGSize(width: 3072, height: 2304)
     private static let MIN_AMBIENT_INTENSITY: CGFloat = 650
 
     // Callbacks
