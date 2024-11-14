@@ -707,7 +707,7 @@ class ReplateCameraController: NSObject {
     private static let MIN_DISTANCE: Float = 0.15
     private static let MAX_DISTANCE: Float = 0.65
     private static let ANGLE_THRESHOLD: Float = 0.6
-    private static let TARGET_IMAGE_SIZE = CGSize(width: 3072, height: 2304)
+    private static let TARGET_IMAGE_SIZE = CGSize(width: 2048, height: 1556)
     private static let MIN_AMBIENT_INTENSITY: CGFloat = 650
 
     // Callbacks
@@ -968,23 +968,32 @@ class ReplateCameraController: NSObject {
 
   private func processAndSaveImage(_ pixelBuffer: CVPixelBuffer, callbackHandler: SafeCallbackHandler) {
     let ciImage = CIImage(cvImageBuffer: pixelBuffer)
-
+    
     guard let resizedImage = resizeImage(ciImage, to: Self.TARGET_IMAGE_SIZE),
           let cgImage = cgImage(from: resizedImage) else {
       callbackHandler.reject(.processingError)
       return
     }
-
+    
     let uiImage = UIImage(cgImage: cgImage)
     let rotatedImage = uiImage.rotate(radians: .pi / 2)
-
-    guard let savedURL = saveImageAsPNG(rotatedImage) else {
-      callbackHandler.reject(.processingError)
-      return
+    
+    // Save the image in the background
+    DispatchQueue.global(qos: .userInitiated).async {
+      guard let savedURL = self.saveImageAsPNG(rotatedImage) else {
+        DispatchQueue.main.async {
+          callbackHandler.reject(.processingError)
+        }
+        return
+      }
+      
+      // Call the callback on the main thread
+      DispatchQueue.main.async {
+        callbackHandler.resolve(savedURL.absoluteString)
+      }
     }
-
-    callbackHandler.resolve(savedURL.absoluteString)
   }
+
 
 
  func resizeImage(_ image: CIImage, to targetSize: CGSize) -> CIImage? {
