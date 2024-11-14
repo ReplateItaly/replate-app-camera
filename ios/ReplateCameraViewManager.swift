@@ -594,7 +594,7 @@ class ReplateCameraView: UIView, ARSessionDelegate {
       print("Error when sending feedback")
     }
   }
-  
+
   func startDeviceMotionUpdates() {
     ReplateCameraView.motionManager.deviceMotionUpdateInterval = 0.1 // Update interval in seconds
     ReplateCameraView.motionManager.startDeviceMotionUpdates(to: .main) { (deviceMotion, error) in
@@ -707,7 +707,8 @@ class ReplateCameraController: NSObject {
     private static let MIN_DISTANCE: Float = 0.15
     private static let MAX_DISTANCE: Float = 0.65
     private static let ANGLE_THRESHOLD: Float = 0.6
-    private static let TARGET_IMAGE_SIZE = CGSize(width: 2048, height: 1556)
+//    private static let TARGET_IMAGE_SIZE = CGSize(width: 2048, height: 1556)
+    private static let TARGET_IMAGE_SIZE = CGSize(width: 3072, height: 2304)
     private static let MIN_AMBIENT_INTENSITY: CGFloat = 650
 
     // Callbacks
@@ -909,12 +910,12 @@ class ReplateCameraController: NSObject {
               callbackHandler.reject(.notInRange)
               return
             }
-            
+
             guard let frame = ReplateCameraView.arView?.session.currentFrame else {
               callbackHandler.reject(.captureError)
               return
             }
-            
+
             // Check lighting conditions
             if let lightEstimate = frame.lightEstimate {
               guard lightEstimate.ambientIntensity >= Self.MIN_AMBIENT_INTENSITY else {
@@ -922,7 +923,7 @@ class ReplateCameraController: NSObject {
                 return
               }
             }
-                    
+
             self.updateSpheres(
                 deviceTargetInfo: deviceTargetInfo,
                 cameraTransform: deviceTargetInfo.transform
@@ -968,16 +969,16 @@ class ReplateCameraController: NSObject {
 
   private func processAndSaveImage(_ pixelBuffer: CVPixelBuffer, callbackHandler: SafeCallbackHandler) {
     let ciImage = CIImage(cvImageBuffer: pixelBuffer)
-    
+
     guard let resizedImage = resizeImage(ciImage, to: Self.TARGET_IMAGE_SIZE),
           let cgImage = cgImage(from: resizedImage) else {
       callbackHandler.reject(.processingError)
       return
     }
-    
+
     let uiImage = UIImage(cgImage: cgImage)
     let rotatedImage = uiImage.rotate(radians: .pi / 2)
-    
+
     // Save the image in the background
     DispatchQueue.global(qos: .userInitiated).async {
       guard let savedURL = self.saveImageAsPNG(rotatedImage) else {
@@ -986,7 +987,7 @@ class ReplateCameraController: NSObject {
         }
         return
       }
-      
+
       // Call the callback on the main thread
       DispatchQueue.main.async {
         callbackHandler.resolve(savedURL.absoluteString)
@@ -1337,30 +1338,30 @@ class ReplateCameraController: NSObject {
 
     return fileURL
   }
-  
+
   func saveImageAsPNG(_ image: UIImage) -> URL? {
     // Convert UIImage to PNG data
     guard let imageData = image.pngData(),
           let source = CGImageSourceCreateWithData(imageData as CFData, nil) else {
       return nil
     }
-    
+
     // Define temporary file URL
     let temporaryDirectoryURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
     let uniqueFilename = "image_\(Date().timeIntervalSince1970).png"
     let fileURL = temporaryDirectoryURL.appendingPathComponent(uniqueFilename)
-    
+
     // Retrieve existing image properties
     guard let imageProperties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else {
       return nil
     }
-    
+
     // Add metadata (including a user comment with transform JSON)
     var mutableMetadata = imageProperties
     mutableMetadata[kCGImagePropertyPNGDictionary] = [
       kCGImagePropertyPNGComment: getTransformJSON(session: ReplateCameraView.arView.session)
     ]
-    
+
     // Create destination for PNG file
     guard let destination = CGImageDestinationCreateWithURL(
       fileURL as CFURL,
@@ -1370,7 +1371,7 @@ class ReplateCameraController: NSObject {
     ) else {
       return nil
     }
-    
+
     // Add image with metadata to destination
     CGImageDestinationAddImageFromSource(
       destination,
@@ -1378,12 +1379,12 @@ class ReplateCameraController: NSObject {
       0,
       mutableMetadata as CFDictionary
     )
-    
+
     // Finalize image creation
     guard CGImageDestinationFinalize(destination) else {
       return nil
     }
-    
+
     return fileURL
   }
 
