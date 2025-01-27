@@ -8,11 +8,11 @@ import com.facebook.react.uimanager.SimpleViewManager
 import com.facebook.react.uimanager.ThemedReactContext
 import com.facebook.react.uimanager.annotations.ReactProp
 
-class ReplateCameraViewManager : SimpleViewManager<View>() {
+class ReplateCameraViewManager : SimpleViewManager<ReplateCameraView>() {
   override fun getName() = "ReplateCameraView"
 
   @RequiresApi(Build.VERSION_CODES.N)
-  override fun createViewInstance(reactContext: ThemedReactContext): View {
+  override fun createViewInstance(reactContext: ThemedReactContext): ReplateCameraView {
     return ReplateCameraView(reactContext)
   }
 
@@ -20,4 +20,5 @@ class ReplateCameraViewManager : SimpleViewManager<View>() {
   fun setColor(view: View, color: String) {
     view.setBackgroundColor(Color.parseColor(color))
   }
+
 }

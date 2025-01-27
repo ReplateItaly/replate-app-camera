@@ -8,7 +8,7 @@ import com.facebook.react.uimanager.ViewManager
 
 class ReplateCameraPackage : ReactPackage {
   override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> {
-    return emptyList()
+    return listOf(ReplateCameraModule(reactContext))
   }
 
   override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> {
