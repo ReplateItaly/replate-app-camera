@@ -72,6 +72,8 @@ class ReplateCameraView: UIView, ARSessionDelegate {
   static var sphereAngle = Float(5)
   static var spheresHeight = Float(0.10)
   static var distanceBetweenCircles = Float(0.10)
+  /// Prototype entity for GPU instancing of spheres
+  static var spherePrototype: ModelEntity?
 
   // Focus and Navigation
   static var focusModel: Entity!
@@ -263,61 +265,13 @@ class ReplateCameraView: UIView, ARSessionDelegate {
     }
     switch gestureRecognizer.state {
     case .changed:
-      // Ensure execution on the main thread
       DispatchQueue.main.async {
-        // Calculate the scale based on the gesture recognizer's scale
-        let scale = Float(gestureRecognizer.scale)
-
-        // Ensure anchor entity is not nil before proceeding
-        guard let anchorEntity = ReplateCameraView.anchorEntity else {
-          print("[handlePinch] Anchor entity is nil.")
-          return
-        }
-
-        // Remove all child entities safely
-        ReplateCameraView.spheresModels.forEach { entity in
-          anchorEntity.removeChild(entity)
-        }
-        if let focusModel = ReplateCameraView.focusModel {
-          anchorEntity.removeChild(focusModel)
-        }
-
-        // Clear spheres models array
-        ReplateCameraView.spheresModels = []
-
-        // Update the scales
-        ReplateCameraView.sphereRadius *= scale
-        ReplateCameraView.spheresRadius *= scale
-        ReplateCameraView.sphereAngle *= scale
-
-        // Recreate spheres and the focus sphere
-        self.createSpheres(y: ReplateCameraView.spheresHeight)
-        self.createSpheres(y: ReplateCameraView.distanceBetweenCircles + ReplateCameraView.spheresHeight)
-        self.createFocusSphere()
-
-        // Update the material of the spheres based on their state
-        for i in 0..<72 {
-          let material = SimpleMaterial(color: .green, roughness: 1, isMetallic: false)
-          if ReplateCameraView.upperSpheresSet[i] {
-            if 72 + i < ReplateCameraView.spheresModels.count {
-              let entity = ReplateCameraView.spheresModels[72 + i]
-              entity.model?.materials[0] = material
-            } else {
-              print("[handlePinch] Upper sphere index out of bounds: \(72 + i)")
-            }
-          }
-          if ReplateCameraView.lowerSpheresSet[i] {
-            if i < ReplateCameraView.spheresModels.count {
-              let entity = ReplateCameraView.spheresModels[i]
-              entity.model?.materials[0] = material
-            } else {
-              print("[handlePinch] Lower sphere index out of bounds: \(i)")
-            }
-          }
-        }
-
-        // Reset the gesture recognizer's scale to 1 to avoid cumulative scaling
-        gestureRecognizer.scale = 1.0
+          guard let anchor = ReplateCameraView.anchorEntity else { return }
+          // Apply uniform scale to the entire anchor entity instead of recreating spheres
+          let scaleFactor = Float(gestureRecognizer.scale)
+          anchor.scale *= SIMD3<Float>(repeating: scaleFactor)
+          // Reset recognizer scale to avoid cumulative scaling
+          gestureRecognizer.scale = 1.0
       }
     default:
       break
@@ -375,8 +329,15 @@ class ReplateCameraView: UIView, ARSessionDelegate {
 
     func createSpheres(y: Float) {
         DispatchQueue.main.async {
+            guard let anchor = ReplateCameraView.anchorEntity else { return }
+            // Lazily initialize a single prototype for instancing
+            if ReplateCameraView.spherePrototype == nil {
+                let mesh = MeshResource.generateSphere(radius: ReplateCameraView.sphereRadius)
+                let material = SimpleMaterial(color: .white.withAlphaComponent(1), roughness: 1, isMetallic: false)
+                ReplateCameraView.spherePrototype = ModelEntity(mesh: mesh, materials: [material])
+            }
+            guard let prototype = ReplateCameraView.spherePrototype else { return }
             let radius = ReplateCameraView.spheresRadius
-
             for i in 0..<72 {
                 let angle = Float(i) * (Float.pi / 180) * 5
                 let position = SIMD3(
@@ -384,10 +345,11 @@ class ReplateCameraView: UIView, ARSessionDelegate {
                     y,
                     radius * sin(angle)
                 )
-
-                let sphere = self.createSphere(position: position)
-                ReplateCameraView.spheresModels.append(sphere)
-                ReplateCameraView.anchorEntity?.addChild(sphere)
+                // Clone the prototype instead of regenerating mesh/material
+                let sphereInstance = prototype.clone(recursive: false)
+                sphereInstance.position = position
+                ReplateCameraView.spheresModels.append(sphereInstance)
+                anchor.addChild(sphereInstance)
             }
         }
     }
@@ -489,6 +451,7 @@ class ReplateCameraView: UIView, ARSessionDelegate {
         dragSpeed = 7000
         dotAnchors.removeAll()
         gravityVector = [:]
+        ReplateCameraView.spherePrototype = nil
     }
 
     private static func setupNewARView() {
@@ -968,30 +931,32 @@ class ReplateCameraController: NSObject {
     }
 
   private func processAndSaveImage(_ pixelBuffer: CVPixelBuffer, callbackHandler: SafeCallbackHandler) {
+    // Convert to CIImage
     let ciImage = CIImage(cvImageBuffer: pixelBuffer)
-
-    guard let resizedImage = resizeImage(ciImage, to: Self.TARGET_IMAGE_SIZE),
-          let cgImage = cgImage(from: resizedImage) else {
-      callbackHandler.reject(.processingError)
-      return
+    // Resize using shared filter
+    guard let filter = ReplateCameraView.scaleFilter else {
+        callbackHandler.reject(.processingError)
+        return
     }
-
+    filter.setValue(ciImage, forKey: kCIInputImageKey)
+    filter.setValue(Self.TARGET_IMAGE_SIZE.width / ciImage.extent.width, forKey: kCIInputScaleKey)
+    filter.setValue(1.0, forKey: kCIInputAspectRatioKey)
+    guard let resized = filter.outputImage,
+          let cgImage = ReplateCameraView.ciContext.createCGImage(resized, from: resized.extent)
+    else {
+        callbackHandler.reject(.processingError)
+        return
+    }
     let uiImage = UIImage(cgImage: cgImage)
     let rotatedImage = uiImage.rotate(radians: .pi / 2)
-
-    // Save the image in the background
-    DispatchQueue.global(qos: .userInitiated).async {
-      guard let savedURL = self.saveImageAsPNG(rotatedImage) else {
+    guard let savedURL = saveImageAsJPEG(rotatedImage) else {
         DispatchQueue.main.async {
-          callbackHandler.reject(.processingError)
+            callbackHandler.reject(.processingError)
         }
         return
-      }
-
-      // Call the callback on the main thread
-      DispatchQueue.main.async {
+    }
+    DispatchQueue.main.async {
         callbackHandler.resolve(savedURL.absoluteString)
-      }
     }
   }
 
