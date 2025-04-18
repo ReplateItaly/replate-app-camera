@@ -1,10 +1,12 @@
 import ARKit
 import RealityKit
+import SwiftUI
 import UIKit
 import AVFoundation
 import ImageIO
 import MobileCoreServices
 import CoreMotion
+import CoreImage
 
 // MARK: - RCTViewManager
 @objc(ReplateCameraViewManager)
@@ -47,7 +49,7 @@ extension UIImage {
 class ReplateCameraView: UIView, ARSessionDelegate {
   // MARK: - Static Properties
   private static let lock = NSLock()
-  private static let arQueue = DispatchQueue(label: "com.replate.ar", qos: .userInteractive)
+  public static let arQueue = DispatchQueue(label: "com.replate.ar", qos: .userInteractive)
 
   // AR View and Core Components
   static var arView: ARView!
@@ -56,6 +58,12 @@ class ReplateCameraView: UIView, ARSessionDelegate {
   static var sessionId: UUID!
   static var motionManager: CMMotionManager!
   static var gravityVector: [String : Double] = [:]
+  /// Core Image filter for scaling camera captures
+  static let scaleFilter = CIFilter(name: "CILanczosScaleTransform")
+  /// Core Image context for rendering CIImages
+  static let ciContext = CIContext()
+  /// AR focus indicator
+  static var focusEntity: FocusEntity?
   static var INSTANCE: ReplateCameraView!
 
   // Scene Configuration
@@ -79,7 +87,6 @@ class ReplateCameraView: UIView, ARSessionDelegate {
   static var focusModel: Entity!
   static var circleInFocus = 0
   static var dragSpeed = CGFloat(7000)
-  static var dotAnchors: [AnchorEntity] = []
 
   // Statistics
   static var totalPhotosTaken = 0
@@ -206,13 +213,6 @@ class ReplateCameraView: UIView, ARSessionDelegate {
       ReplateCameraController.anchorSetCallback = nil
     }
     if (ReplateCameraView.model == nil && ReplateCameraView.anchorEntity == nil) {
-      DispatchQueue.main.async{
-        for dot in ReplateCameraView.dotAnchors {
-          dot.removeFromParent()
-          ReplateCameraView.arView.scene.removeAnchor(dot)
-        }
-        ReplateCameraView.dotAnchors = []
-      }
       ReplateCameraView.anchorEntity = anchor
       createSpheres(y: ReplateCameraView.spheresHeight)
       createSpheres(y: ReplateCameraView.distanceBetweenCircles + ReplateCameraView.spheresHeight)
@@ -362,33 +362,8 @@ class ReplateCameraView: UIView, ARSessionDelegate {
         return sphere
     }
 
-  func addDots(to planeAnchor: ARPlaneAnchor) {
-    print("Adding dots to plane anchor") // Debugging line
-    let center = planeAnchor.center
-    let extent = planeAnchor.extent
 
-    var dotPositions: [SIMD3<Float>] = []
-    let dotSpacing: Float = 0.05 // Adjust the spacing of dots (smaller value for more dots)
 
-    for x in stride(from: -extent.x / 2, through: extent.x / 2, by: dotSpacing) {
-      for z in stride(from: -extent.z / 2, through: extent.z / 2, by: dotSpacing) {
-        let position = SIMD3<Float>(x + center.x, 0, z + center.z)
-        dotPositions.append(position)
-      }
-    }
-
-    DispatchQueue.main.asyncAfter(deadline: DispatchTime.now().advanced(by: DispatchTimeInterval.milliseconds(1000)), execute: {
-      // Add the dots to the ARView
-      for position in dotPositions {
-        let dotAnchor = AnchorEntity(world: planeAnchor.transform)
-        let dot = self.createDot(at: position) // Assuming you're using the circle function
-        dot.position.y = 0 // Ensure the dot position matches the plane's height
-        dotAnchor.addChild(dot)
-        ReplateCameraView.arView.scene.addAnchor(dotAnchor)
-        ReplateCameraView.dotAnchors.append(dotAnchor)
-      }
-    })
-  }
 
 
   func createDot(at position: SIMD3<Float>) -> ModelEntity {
@@ -449,7 +424,6 @@ class ReplateCameraView: UIView, ARSessionDelegate {
         sphereAngle = 5
         spheresHeight = 0.10
         dragSpeed = 7000
-        dotAnchors.removeAll()
         gravityVector = [:]
         ReplateCameraView.spherePrototype = nil
     }
@@ -461,6 +435,16 @@ class ReplateCameraView: UIView, ARSessionDelegate {
         arView.backgroundColor = instance.hexStringToUIColor(hexColor: "#32a852")
         instance.addSubview(arView)
         arView.session.delegate = instance
+        // Show a light-colored circular focus reticle
+      if #available(iOS 18.0, *) {
+          DispatchQueue.main.async {
+            focusEntity = FocusEntity(
+              on: arView,
+              style: .classic(color: .white.withAlphaComponent(0.1))
+              )
+          }
+      }
+
         motionManager = CMMotionManager()
         if motionManager.isDeviceMotionAvailable {
           ReplateCameraView.INSTANCE.startDeviceMotionUpdates()
@@ -522,15 +506,7 @@ class ReplateCameraView: UIView, ARSessionDelegate {
   }
 
   internal func session(_ session: ARSession, didAdd anchors: [ARAnchor]) {
-    print("Planes detected: \(anchors.count)") // Debugging line
-    for anchor in anchors {
-      if let planeAnchor = anchor as? ARPlaneAnchor {
-        print("Adding dots to plane")
-        if (ReplateCameraView.spheresModels.isEmpty && ReplateCameraView.dotAnchors.isEmpty) {
-          addDots(to: planeAnchor)
-        }
-      }
-    }
+    // FocusEntity automatically highlights detected planes.
   }
 
   func session(_ session: ARSession, didUpdate frame: ARFrame) {
@@ -896,7 +872,9 @@ class ReplateCameraController: NSObject {
                     return
                 }
 
-                self.processAndSaveImage(frame.capturedImage, callbackHandler: callbackHandler)
+                ReplateCameraView.arQueue.async {
+                  self.processAndSaveImage(frame.capturedImage, callbackHandler: callbackHandler)
+                }
             }
         }
     }
