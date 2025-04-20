@@ -142,7 +142,6 @@ class ReplateCameraView: UIView, ARSessionDelegate {
         configureVideoFormat(configuration)
 
         arView.session.run(configuration)
-        arView.addCoaching()
         sessionId = arView.session.identifier
     }
 
@@ -193,19 +192,10 @@ class ReplateCameraView: UIView, ARSessionDelegate {
 
   @objc func viewTapped(_ recognizer: UITapGestureRecognizer) {
     print("VIEW TAPPED")
-    let tapLocation: CGPoint = recognizer.location(in: ReplateCameraView.arView)
-    let estimatedPlane: ARRaycastQuery.Target = .estimatedPlane
-    let alignment: ARRaycastQuery.TargetAlignment = .horizontal
-
-    let result: [ARRaycastResult] = ReplateCameraView.arView.raycast(from: tapLocation,
-                                                                     allowing: estimatedPlane,
-                                                                     alignment: alignment)
-
-    guard let rayCast: ARRaycastResult = result.first
-    else {
-      return
-    }
-    let anchor = AnchorEntity(world: rayCast.worldTransform)
+    // Place anchor at the focus entity's current transform
+    guard let focus = ReplateCameraView.focusEntity else { return }
+    let focusTransform = focus.transformMatrix(relativeTo: nil)
+    let anchor = AnchorEntity(world: focusTransform)
     print("ANCHOR FOUND\n", anchor.transform)
     let callback = ReplateCameraController.anchorSetCallback
     if (callback != nil) {
@@ -219,6 +209,8 @@ class ReplateCameraView: UIView, ARSessionDelegate {
       createFocusSphere()
       guard let anchorEntity = ReplateCameraView.anchorEntity else { return }
       ReplateCameraView.arView.scene.anchors.append(anchorEntity)
+      // Hide the focus reticle once an anchor is set
+      ReplateCameraView.focusEntity?.isEnabled = false
     }
   }
 
