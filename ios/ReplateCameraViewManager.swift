@@ -9,6 +9,17 @@ import CoreMotion
 import CoreImage
 import Darwin.Mach
 
+// Memory monitoring structure
+struct mach_task_basic_info {
+    var virtual_size: mach_vm_size_t = 0
+    var resident_size: mach_vm_size_t = 0
+    var resident_size_max: mach_vm_size_t = 0
+    var user_time: time_value_t = time_value_t()
+    var system_time: time_value_t = time_value_t()
+    var policy: policy_t = 0
+    var suspend_count: integer_t = 0
+}
+
 // MARK: - RCTViewManager
 @objc(ReplateCameraViewManager)
 class ReplateCameraViewManager: RCTViewManager {
@@ -418,6 +429,25 @@ class ReplateCameraView: UIView, ARSessionDelegate {
         gravityVector = [:]
         ReplateCameraView.spherePrototype = nil
         wasOutOfRange = false
+
+        // Clean up temporary files to free disk space
+        cleanupTemporaryFiles()
+    }
+
+    private static func cleanupTemporaryFiles() {
+        let temporaryDirectoryURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        do {
+            let fileURLs = try FileManager.default.contentsOfDirectory(at: temporaryDirectoryURL,
+                                                                      includingPropertiesForKeys: nil,
+                                                                      options: [])
+            for fileURL in fileURLs {
+                if fileURL.pathExtension.lowercased() == "jpg" {
+                    try? FileManager.default.removeItem(at: fileURL)
+                }
+            }
+        } catch {
+            print("Error cleaning temporary files: \(error)")
+        }
     }
 
     private static func setupNewARView() {
@@ -737,10 +767,25 @@ class ReplateCameraController: NSObject {
         resolver(remaining)
     }
 
-    @objc
-    func reset() {
-        DispatchQueue.main.async {
-            ReplateCameraView.reset()
+    @objc(getMemoryUsage:rejecter:)
+    func getMemoryUsage(_ resolver: RCTPromiseResolveBlock, rejecter: RCTPromiseRejectBlock) {
+        let memoryInfo = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size)/4
+
+        let result: kern_return_t = withUnsafeMutablePointer(to: &memoryInfo) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: 1) {
+                task_info(mach_task_self_,
+                         task_flavor_t(MACH_TASK_BASIC_INFO),
+                         $0,
+                         &count)
+            }
+        }
+
+        if result == KERN_SUCCESS {
+            let memoryUsageMB = Double(memoryInfo.resident_size) / 1024.0 / 1024.0
+            resolver(["memoryUsageMB": memoryUsageMB])
+        } else {
+            resolver(["memoryUsageMB": -1])
         }
     }
 
