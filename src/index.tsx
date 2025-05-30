@@ -82,6 +82,10 @@ export function registerTooCloseCallback(callback: () => void) {
   ReplateCameraModule.registerTooCloseCallback(callback);
 }
 
+export function registerBackInRangeCallback(callback: () => void) {
+  ReplateCameraModule.registerBackInRangeCallback(callback);
+}
+
 export function reset() {
   ReplateCameraModule.reset();
 }

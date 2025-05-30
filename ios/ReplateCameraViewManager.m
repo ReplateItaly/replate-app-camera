@@ -39,6 +39,8 @@ RCT_EXTERN_METHOD(registerTooCloseCallback:(RCTResponseSenderBlock)callback)
 
 RCT_EXTERN_METHOD(registerTooFarCallback:(RCTResponseSenderBlock)callback)
 
+RCT_EXTERN_METHOD(registerBackInRangeCallback:(RCTResponseSenderBlock)callback)
+
 RCT_EXTERN_METHOD(reset)
 
 + (BOOL)requiresMainQueueSetup

@@ -418,6 +418,7 @@ class ReplateCameraView: UIView, ARSessionDelegate {
         dragSpeed = 7000
         gravityVector = [:]
         ReplateCameraView.spherePrototype = nil
+        wasOutOfRange = false
     }
 
     private static func setupNewARView() {
@@ -650,6 +651,10 @@ class ReplateCameraController: NSObject {
     static var openedTutorialCallback: RCTResponseSenderBlock?
     static var tooCloseCallback: RCTResponseSenderBlock?
     static var tooFarCallback: RCTResponseSenderBlock?
+    static var backInRangeCallback: RCTResponseSenderBlock?
+
+    // State tracking for backInRange callback
+    static var wasOutOfRange = false
 
     // MARK: - Callback Registration Methods
     @objc(registerOpenedTutorialCallback:)
@@ -699,6 +704,13 @@ class ReplateCameraController: NSObject {
         Self.lock.lock()
         defer { Self.lock.unlock() }
         ReplateCameraController.tooFarCallback = callback
+    }
+
+    @objc(registerBackInRangeCallback:)
+    func registerBackInRangeCallback(_ callback: @escaping RCTResponseSenderBlock) {
+        Self.lock.lock()
+        defer { Self.lock.unlock() }
+        ReplateCameraController.backInRangeCallback = callback
     }
 
     // MARK: - Public Methods
@@ -888,14 +900,22 @@ class ReplateCameraController: NSObject {
 
         switch distance {
         case 1:
+            ReplateCameraController.wasOutOfRange = true
             ReplateCameraController.tooFarCallback?([])
             ReplateCameraController.tooFarCallback = nil
             return false
         case -1:
+            ReplateCameraController.wasOutOfRange = true
             ReplateCameraController.tooCloseCallback?([])
             ReplateCameraController.tooCloseCallback = nil
             return false
         default:
+            // Camera is in correct range
+            if ReplateCameraController.wasOutOfRange {
+                ReplateCameraController.wasOutOfRange = false
+                ReplateCameraController.backInRangeCallback?([])
+                ReplateCameraController.backInRangeCallback = nil
+            }
             return true
         }
     }
