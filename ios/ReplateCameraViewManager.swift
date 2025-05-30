@@ -433,7 +433,7 @@ class ReplateCameraView: UIView, ARSessionDelegate {
           DispatchQueue.main.async {
             focusEntity = FocusEntity(
               on: arView,
-              style: .classic(color: .white.withAlphaComponent(0.1))
+              style: .classic(color: .clear)
               )
           }
       }
