@@ -7,6 +7,7 @@ import ImageIO
 import MobileCoreServices
 import CoreMotion
 import CoreImage
+import Darwin.Mach
 
 // MARK: - RCTViewManager
 @objc(ReplateCameraViewManager)
@@ -58,8 +59,6 @@ class ReplateCameraView: UIView, ARSessionDelegate {
   static var sessionId: UUID!
   static var motionManager: CMMotionManager!
   static var gravityVector: [String : Double] = [:]
-  /// Core Image filter for scaling camera captures
-  static let scaleFilter = CIFilter(name: "CILanczosScaleTransform")
   /// Core Image context for rendering CIImages
   static let ciContext = CIContext()
   /// AR focus indicator
@@ -748,6 +747,35 @@ class ReplateCameraController: NSObject {
     // MARK: - Photo Capture and Processing
     @objc(takePhoto:resolver:rejecter:)
     func takePhoto(_ unlimited: Bool = false, resolver: @escaping RCTPromiseResolveBlock, rejecter: @escaping RCTPromiseRejectBlock) {
+        // Add memory pressure check to prevent overwhelming the system
+        let memoryInfo = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size)/4
+
+        let result: kern_return_t = withUnsafeMutablePointer(to: &memoryInfo) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: 1) {
+                task_info(mach_task_self_,
+                         task_flavor_t(MACH_TASK_BASIC_INFO),
+                         $0,
+                         &count)
+            }
+        }
+
+        // If memory usage is too high, delay the photo taking
+        if result == KERN_SUCCESS {
+            let memoryUsage = memoryInfo.resident_size
+            // If using more than 500MB, add a small delay
+            if memoryUsage > 500_000_000 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    self.executePhotoCapture(unlimited: unlimited, resolver: resolver, rejecter: rejecter)
+                }
+                return
+            }
+        }
+
+        executePhotoCapture(unlimited: unlimited, resolver: resolver, rejecter: rejecter)
+    }
+
+    private func executePhotoCapture(unlimited: Bool, resolver: @escaping RCTPromiseResolveBlock, rejecter: @escaping RCTPromiseRejectBlock) {
         Self.arQueue.async { [weak self] in
             guard let self = self else { return }
 
@@ -844,27 +872,28 @@ class ReplateCameraController: NSObject {
     }
 
     private func processTargetedDevice(deviceTargetInfo: DeviceTargetInfo, unlimited: Bool, callbackHandler: SafeCallbackHandler) throws {
+        // Capture frame reference early to avoid main thread dependency
+        guard let frame = ReplateCameraView.arView?.session.currentFrame else {
+            callbackHandler.reject(.captureError)
+            return
+        }
+
+        // Check lighting conditions
+        if let lightEstimate = frame.lightEstimate {
+            guard lightEstimate.ambientIntensity >= Self.MIN_AMBIENT_INTENSITY else {
+                callbackHandler.reject(.lightingError)
+                return
+            }
+        }
+
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
 
             self.updateCircleFocus(targetIndex: deviceTargetInfo.targetIndex)
             let isInRange = self.checkCameraDistance(deviceTargetInfo: deviceTargetInfo)
             if !isInRange {
-              callbackHandler.reject(.notInRange)
-              return
-            }
-
-            guard let frame = ReplateCameraView.arView?.session.currentFrame else {
-              callbackHandler.reject(.captureError)
-              return
-            }
-
-            // Check lighting conditions
-            if let lightEstimate = frame.lightEstimate {
-              guard lightEstimate.ambientIntensity >= Self.MIN_AMBIENT_INTENSITY else {
-                callbackHandler.reject(.lightingError)
+                callbackHandler.reject(.notInRange)
                 return
-              }
             }
 
             self.updateSpheres(
@@ -876,8 +905,9 @@ class ReplateCameraController: NSObject {
                     return
                 }
 
+                // Process image on background queue to avoid main thread blocking
                 ReplateCameraView.arQueue.async {
-                  self.processAndSaveImage(frame.capturedImage, callbackHandler: callbackHandler)
+                    self.processAndSaveImage(frame.capturedImage, callbackHandler: callbackHandler)
                 }
             }
         }
@@ -921,32 +951,41 @@ class ReplateCameraController: NSObject {
     }
 
   private func processAndSaveImage(_ pixelBuffer: CVPixelBuffer, callbackHandler: SafeCallbackHandler) {
-    // Convert to CIImage
-    let ciImage = CIImage(cvImageBuffer: pixelBuffer)
-    // Resize using shared filter
-    guard let filter = ReplateCameraView.scaleFilter else {
-        callbackHandler.reject(.processingError)
-        return
-    }
-    filter.setValue(ciImage, forKey: kCIInputImageKey)
-    filter.setValue(Self.TARGET_IMAGE_SIZE.width / ciImage.extent.width, forKey: kCIInputScaleKey)
-    filter.setValue(1.0, forKey: kCIInputAspectRatioKey)
-    guard let resized = filter.outputImage,
-          let cgImage = ReplateCameraView.ciContext.createCGImage(resized, from: resized.extent)
-    else {
-        callbackHandler.reject(.processingError)
-        return
-    }
-    let uiImage = UIImage(cgImage: cgImage)
-    let rotatedImage = uiImage.rotate(radians: .pi / 2)
-    guard let savedURL = saveImageAsJPEG(rotatedImage) else {
-        DispatchQueue.main.async {
+    // Wrap in autoreleasepool to ensure memory is released immediately
+    autoreleasepool {
+        // Convert to CIImage
+        let ciImage = CIImage(cvImageBuffer: pixelBuffer)
+
+        // Create a fresh filter instance to avoid state accumulation
+        guard let filter = CIFilter(name: "CILanczosScaleTransform") else {
             callbackHandler.reject(.processingError)
+            return
         }
-        return
-    }
-    DispatchQueue.main.async {
-        callbackHandler.resolve(savedURL.absoluteString)
+
+        filter.setValue(ciImage, forKey: kCIInputImageKey)
+        filter.setValue(Self.TARGET_IMAGE_SIZE.width / ciImage.extent.width, forKey: kCIInputScaleKey)
+        filter.setValue(1.0, forKey: kCIInputAspectRatioKey)
+
+        guard let resized = filter.outputImage,
+              let cgImage = ReplateCameraView.ciContext.createCGImage(resized, from: resized.extent)
+        else {
+            callbackHandler.reject(.processingError)
+            return
+        }
+
+        let uiImage = UIImage(cgImage: cgImage)
+        let rotatedImage = uiImage.rotate(radians: .pi / 2)
+
+        guard let savedURL = saveImageAsJPEG(rotatedImage) else {
+            DispatchQueue.main.async {
+                callbackHandler.reject(.processingError)
+            }
+            return
+        }
+
+        DispatchQueue.main.async {
+            callbackHandler.resolve(savedURL.absoluteString)
+        }
     }
   }
 
