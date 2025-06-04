@@ -86,6 +86,10 @@ export function registerBackInRangeCallback(callback: () => void) {
   ReplateCameraModule.registerBackInRangeCallback(callback);
 }
 
+export function getMemoryUsage(): Promise<{memoryUsageMB: number}> {
+  return ReplateCameraModule.getMemoryUsage();
+}
+
 export function reset() {
   ReplateCameraModule.reset();
 }

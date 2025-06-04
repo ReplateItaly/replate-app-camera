@@ -428,7 +428,7 @@ class ReplateCameraView: UIView, ARSessionDelegate {
         dragSpeed = 7000
         gravityVector = [:]
         ReplateCameraView.spherePrototype = nil
-        wasOutOfRange = false
+        ReplateCameraController.wasOutOfRange = false
 
         // Clean up temporary files to free disk space
         cleanupTemporaryFiles()
@@ -767,9 +767,16 @@ class ReplateCameraController: NSObject {
         resolver(remaining)
     }
 
+    @objc
+    func reset() {
+        DispatchQueue.main.async {
+            ReplateCameraView.reset()
+        }
+    }
+
     @objc(getMemoryUsage:rejecter:)
     func getMemoryUsage(_ resolver: RCTPromiseResolveBlock, rejecter: RCTPromiseRejectBlock) {
-        let memoryInfo = mach_task_basic_info()
+        var memoryInfo = mach_task_basic_info()
         var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size)/4
 
         let result: kern_return_t = withUnsafeMutablePointer(to: &memoryInfo) {
@@ -793,7 +800,7 @@ class ReplateCameraController: NSObject {
     @objc(takePhoto:resolver:rejecter:)
     func takePhoto(_ unlimited: Bool = false, resolver: @escaping RCTPromiseResolveBlock, rejecter: @escaping RCTPromiseRejectBlock) {
         // Add memory pressure check to prevent overwhelming the system
-        let memoryInfo = mach_task_basic_info()
+        var memoryInfo = mach_task_basic_info()
         var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size)/4
 
         let result: kern_return_t = withUnsafeMutablePointer(to: &memoryInfo) {
