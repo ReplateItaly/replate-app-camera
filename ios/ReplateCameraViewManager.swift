@@ -458,14 +458,12 @@ class ReplateCameraView: UIView, ARSessionDelegate {
         instance.addSubview(arView)
         arView.session.delegate = instance
         // Show a light-colored circular focus reticle
-      if #available(iOS 18.0, *) {
-          DispatchQueue.main.async {
-            focusEntity = FocusEntity(
-              on: arView,
-              style: .classic(color: .white)
-              )
-          }
-      }
+        DispatchQueue.main.async {
+          focusEntity = FocusEntity(
+            on: arView,
+            style: .classic(color: .white)
+            )
+        }
 
         motionManager = CMMotionManager()
         if motionManager.isDeviceMotionAvailable {
