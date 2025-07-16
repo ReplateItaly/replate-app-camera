@@ -70,6 +70,11 @@ class ReplateCameraView: UIView, ARSessionDelegate {
   static var sessionId: UUID!
   static var motionManager: CMMotionManager!
   static var gravityVector: [String : Double] = [:]
+  
+  // Tap handling state
+  private static var isProcessingTap = false
+  private static var lastTapTime: TimeInterval = 0
+  private static let tapDebounceInterval: TimeInterval = 0.5
   /// Core Image context for rendering CIImages
   static let ciContext = CIContext()
   /// AR focus indicator
@@ -202,26 +207,67 @@ class ReplateCameraView: UIView, ARSessionDelegate {
 
   @objc func viewTapped(_ recognizer: UITapGestureRecognizer) {
     print("VIEW TAPPED")
+    
+    // Thread-safe tap handling with debouncing
+    Self.lock.lock()
+    defer { Self.lock.unlock() }
+    
+    // Check if we're already processing a tap
+    if ReplateCameraView.isProcessingTap {
+      print("Tap ignored - already processing")
+      return
+    }
+    
+    // Debounce rapid taps
+    let currentTime = Date().timeIntervalSince1970
+    if currentTime - ReplateCameraView.lastTapTime < ReplateCameraView.tapDebounceInterval {
+      print("Tap ignored - too soon after last tap")
+      return
+    }
+    
+    // Check if anchor already exists (simplified condition)
+    if ReplateCameraView.anchorEntity != nil {
+      print("Tap ignored - anchor already set")
+      return
+    }
+    
+    // Set processing flags
+    ReplateCameraView.isProcessingTap = true
+    ReplateCameraView.lastTapTime = currentTime
+    
     // Place anchor at the focus entity's current transform
-    guard let focus = ReplateCameraView.focusEntity else { return }
+    guard let focus = ReplateCameraView.focusEntity else {
+      ReplateCameraView.isProcessingTap = false
+      return
+    }
+    
     let focusTransform = focus.transformMatrix(relativeTo: nil)
     let anchor = AnchorEntity(world: focusTransform)
     print("ANCHOR FOUND\n", anchor.transform)
+    
+    // Fire callback
     let callback = ReplateCameraController.anchorSetCallback
     if (callback != nil) {
       callback!([])
       ReplateCameraController.anchorSetCallback = nil
     }
-    if (ReplateCameraView.model == nil && ReplateCameraView.anchorEntity == nil) {
-      ReplateCameraView.anchorEntity = anchor
-      createSpheres(y: ReplateCameraView.spheresHeight)
-      createSpheres(y: ReplateCameraView.distanceBetweenCircles + ReplateCameraView.spheresHeight)
-      createFocusSphere()
-      guard let anchorEntity = ReplateCameraView.anchorEntity else { return }
-      ReplateCameraView.arView.scene.anchors.append(anchorEntity)
-      // Hide the focus reticle once an anchor is set
-      ReplateCameraView.focusEntity?.isEnabled = false
+    
+    // Set the anchor
+    ReplateCameraView.anchorEntity = anchor
+    createSpheres(y: ReplateCameraView.spheresHeight)
+    createSpheres(y: ReplateCameraView.distanceBetweenCircles + ReplateCameraView.spheresHeight)
+    createFocusSphere()
+    guard let anchorEntity = ReplateCameraView.anchorEntity else {
+      ReplateCameraView.isProcessingTap = false
+      return
     }
+    ReplateCameraView.arView.scene.anchors.append(anchorEntity)
+    
+    // Hide the focus reticle once an anchor is set
+    ReplateCameraView.focusEntity?.isEnabled = false
+    
+    // Reset processing flag
+    ReplateCameraView.isProcessingTap = false
   }
 
   @objc private func handlePan(_ gestureRecognizer: UIPanGestureRecognizer) {
@@ -429,6 +475,10 @@ class ReplateCameraView: UIView, ARSessionDelegate {
         gravityVector = [:]
         ReplateCameraView.spherePrototype = nil
         ReplateCameraController.wasOutOfRange = false
+        
+        // Reset tap handling state
+        isProcessingTap = false
+        lastTapTime = 0
 
         // Clean up temporary files to free disk space
         cleanupTemporaryFiles()
