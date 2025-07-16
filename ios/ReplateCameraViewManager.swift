@@ -70,7 +70,7 @@ class ReplateCameraView: UIView, ARSessionDelegate {
   static var sessionId: UUID!
   static var motionManager: CMMotionManager!
   static var gravityVector: [String : Double] = [:]
-  
+
   // Tap handling state
   private static var isProcessingTap = false
   private static var lastTapTime: TimeInterval = 0
@@ -137,7 +137,7 @@ class ReplateCameraView: UIView, ARSessionDelegate {
         ReplateCameraView.width = frame.width
         ReplateCameraView.height = frame.height
     }
-    
+
     override func removeFromSuperview() {
         print("[ReplateCameraView] View being removed from superview - cleaning up AR session")
         pauseSession()
@@ -217,51 +217,51 @@ class ReplateCameraView: UIView, ARSessionDelegate {
 
   @objc func viewTapped(_ recognizer: UITapGestureRecognizer) {
     print("VIEW TAPPED")
-    
+
     // Thread-safe tap handling with debouncing
     Self.lock.lock()
     defer { Self.lock.unlock() }
-    
+
     // Check if we're already processing a tap
     if ReplateCameraView.isProcessingTap {
       print("Tap ignored - already processing")
       return
     }
-    
+
     // Debounce rapid taps
     let currentTime = Date().timeIntervalSince1970
     if currentTime - ReplateCameraView.lastTapTime < ReplateCameraView.tapDebounceInterval {
       print("Tap ignored - too soon after last tap")
       return
     }
-    
+
     // Check if anchor already exists (simplified condition)
     if ReplateCameraView.anchorEntity != nil {
       print("Tap ignored - anchor already set")
       return
     }
-    
+
     // Set processing flags
     ReplateCameraView.isProcessingTap = true
     ReplateCameraView.lastTapTime = currentTime
-    
+
     // Place anchor at the focus entity's current transform
     guard let focus = ReplateCameraView.focusEntity else {
       ReplateCameraView.isProcessingTap = false
       return
     }
-    
+
     let focusTransform = focus.transformMatrix(relativeTo: nil)
     let anchor = AnchorEntity(world: focusTransform)
     print("ANCHOR FOUND\n", anchor.transform)
-    
+
     // Fire callback
     let callback = ReplateCameraController.anchorSetCallback
     if (callback != nil) {
       callback!([])
       ReplateCameraController.anchorSetCallback = nil
     }
-    
+
     // Set the anchor
     ReplateCameraView.anchorEntity = anchor
     createSpheres(y: ReplateCameraView.spheresHeight)
@@ -272,10 +272,10 @@ class ReplateCameraView: UIView, ARSessionDelegate {
       return
     }
     ReplateCameraView.arView.scene.anchors.append(anchorEntity)
-    
+
     // Hide the focus reticle once an anchor is set
     ReplateCameraView.focusEntity?.isEnabled = false
-    
+
     // Reset processing flag
     ReplateCameraView.isProcessingTap = false
   }
@@ -461,28 +461,28 @@ class ReplateCameraView: UIView, ARSessionDelegate {
         }
     }
 
-    private static func tearDownARSession() {
+    static func tearDownARSession() {
         guard isSessionActive else { return }
-        
+
         arView?.session.pause()
         arView?.session.delegate = nil
         arView?.scene.anchors.removeAll()
         arView?.removeFromSuperview()
         arView?.window?.resignKey()
-        
+
         // Properly terminate the session
         if let session = arView?.session {
             session.pause()
             // Clear all session data
             arView?.session.delegate = nil
         }
-        
+
         // Stop motion manager
         motionManager?.stopDeviceMotionUpdates()
-        
+
         // Mark session as inactive
         isSessionActive = false
-        
+
         print("[ReplateCameraView] AR session properly terminated")
     }
 
@@ -502,11 +502,11 @@ class ReplateCameraView: UIView, ARSessionDelegate {
         gravityVector = [:]
         ReplateCameraView.spherePrototype = nil
         ReplateCameraController.wasOutOfRange = false
-        
+
         // Reset tap handling state
         isProcessingTap = false
         lastTapTime = 0
-        
+
         // Reset session state
         isSessionActive = false
 
@@ -617,7 +617,7 @@ class ReplateCameraView: UIView, ARSessionDelegate {
   func sessionWasInterrupted(_ session: ARSession) {
     print("SESSION INTERRUPTED")
     ReplateCameraView.motionManager.stopDeviceMotionUpdates()
-    
+
     // Properly pause the session to save resources
     session.pause()
     ReplateCameraView.isSessionActive = false
@@ -626,7 +626,7 @@ class ReplateCameraView: UIView, ARSessionDelegate {
 
   func sessionInterruptionEnded(_ session: ARSession) {
     print("SESSION RESUMED")
-    
+
     // Only resume if we should still be active
     if !ReplateCameraView.isResetting && ReplateCameraView.INSTANCE != nil {
       ReplateCameraView.INSTANCE.startDeviceMotionUpdates()
@@ -659,7 +659,7 @@ class ReplateCameraView: UIView, ARSessionDelegate {
       }
     }
   }
-  
+
   // MARK: - Lifecycle Management
   private func setupAppStateObservers() {
     NotificationCenter.default.addObserver(
@@ -668,7 +668,7 @@ class ReplateCameraView: UIView, ARSessionDelegate {
       name: UIApplication.didEnterBackgroundNotification,
       object: nil
     )
-    
+
     NotificationCenter.default.addObserver(
       self,
       selector: #selector(appWillEnterForeground),
@@ -676,40 +676,40 @@ class ReplateCameraView: UIView, ARSessionDelegate {
       object: nil
     )
   }
-  
+
   @objc private func appDidEnterBackground() {
     print("[ReplateCameraView] App entered background - pausing AR session")
     pauseSession()
   }
-  
+
   @objc private func appWillEnterForeground() {
     print("[ReplateCameraView] App entering foreground - resuming AR session")
     resumeSession()
   }
-  
-  private func pauseSession() {
+
+func pauseSession() {
     guard ReplateCameraView.isSessionActive else { return }
-    
+
     ReplateCameraView.arView?.session.pause()
     ReplateCameraView.motionManager?.stopDeviceMotionUpdates()
     ReplateCameraView.isSessionActive = false
     print("[ReplateCameraView] AR session paused")
   }
-  
-  private func resumeSession() {
+
+func resumeSession() {
     guard !ReplateCameraView.isSessionActive && !ReplateCameraView.isResetting else { return }
     guard ReplateCameraView.arView != nil else { return }
-    
+
     let configuration = ARWorldTrackingConfiguration()
     configuration.isLightEstimationEnabled = true
     configuration.planeDetection = .horizontal
-    
+
     ReplateCameraView.arView?.session.run(configuration)
     startDeviceMotionUpdates()
     ReplateCameraView.isSessionActive = true
     print("[ReplateCameraView] AR session resumed")
   }
-  
+
   deinit {
     NotificationCenter.default.removeObserver(self)
     pauseSession()
@@ -918,21 +918,21 @@ class ReplateCameraController: NSObject {
             ReplateCameraView.reset()
         }
     }
-    
+
     @objc
     func pauseSession() {
         DispatchQueue.main.async {
             ReplateCameraView.INSTANCE?.pauseSession()
         }
     }
-    
+
     @objc
     func resumeSession() {
         DispatchQueue.main.async {
             ReplateCameraView.INSTANCE?.resumeSession()
         }
     }
-    
+
     @objc
     func stopSession() {
         DispatchQueue.main.async {
