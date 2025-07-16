@@ -46,6 +46,12 @@ RCT_EXTERN_METHOD(getMemoryUsage:(RCTPromiseResolveBlock*)resolve
 
 RCT_EXTERN_METHOD(reset)
 
+RCT_EXTERN_METHOD(pauseSession)
+
+RCT_EXTERN_METHOD(resumeSession)
+
+RCT_EXTERN_METHOD(stopSession)
+
 + (BOOL)requiresMainQueueSetup
 {
     return NO;

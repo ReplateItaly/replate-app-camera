@@ -109,6 +109,7 @@ class ReplateCameraView: UIView, ARSessionDelegate {
 
   // Thread Safety
   private static var isResetting = false
+  private static var isSessionActive = false
 
   // MARK: - Initialization
   override init(frame: CGRect) {
@@ -124,6 +125,7 @@ class ReplateCameraView: UIView, ARSessionDelegate {
   private func setupInitialState() {
     requestCameraPermissions()
     ReplateCameraView.INSTANCE = self
+    setupAppStateObservers()
   }
 
     // MARK: - Layout
@@ -134,6 +136,12 @@ class ReplateCameraView: UIView, ARSessionDelegate {
 
         ReplateCameraView.width = frame.width
         ReplateCameraView.height = frame.height
+    }
+    
+    override func removeFromSuperview() {
+        print("[ReplateCameraView] View being removed from superview - cleaning up AR session")
+        pauseSession()
+        super.removeFromSuperview()
     }
 
     // MARK: - AR Setup and Configuration
@@ -148,6 +156,8 @@ class ReplateCameraView: UIView, ARSessionDelegate {
             DispatchQueue.main.async {
                 configureARView(configuration)
                 addRecognizers()
+                isSessionActive = true
+                print("[ReplateCameraView] AR session started")
             }
         }
     }
@@ -452,11 +462,28 @@ class ReplateCameraView: UIView, ARSessionDelegate {
     }
 
     private static func tearDownARSession() {
+        guard isSessionActive else { return }
+        
         arView?.session.pause()
         arView?.session.delegate = nil
         arView?.scene.anchors.removeAll()
         arView?.removeFromSuperview()
         arView?.window?.resignKey()
+        
+        // Properly terminate the session
+        if let session = arView?.session {
+            session.pause()
+            // Clear all session data
+            arView?.session.delegate = nil
+        }
+        
+        // Stop motion manager
+        motionManager?.stopDeviceMotionUpdates()
+        
+        // Mark session as inactive
+        isSessionActive = false
+        
+        print("[ReplateCameraView] AR session properly terminated")
     }
 
     private static func resetProperties() {
@@ -479,6 +506,9 @@ class ReplateCameraView: UIView, ARSessionDelegate {
         // Reset tap handling state
         isProcessingTap = false
         lastTapTime = 0
+        
+        // Reset session state
+        isSessionActive = false
 
         // Clean up temporary files to free disk space
         cleanupTemporaryFiles()
@@ -587,11 +617,22 @@ class ReplateCameraView: UIView, ARSessionDelegate {
   func sessionWasInterrupted(_ session: ARSession) {
     print("SESSION INTERRUPTED")
     ReplateCameraView.motionManager.stopDeviceMotionUpdates()
+    
+    // Properly pause the session to save resources
+    session.pause()
+    ReplateCameraView.isSessionActive = false
+    print("[ReplateCameraView] AR session paused due to interruption")
   }
 
   func sessionInterruptionEnded(_ session: ARSession) {
     print("SESSION RESUMED")
-    ReplateCameraView.INSTANCE.startDeviceMotionUpdates()
+    
+    // Only resume if we should still be active
+    if !ReplateCameraView.isResetting && ReplateCameraView.INSTANCE != nil {
+      ReplateCameraView.INSTANCE.startDeviceMotionUpdates()
+      ReplateCameraView.isSessionActive = true
+      print("[ReplateCameraView] AR session resumed after interruption")
+    }
   }
 
   func generateImpactFeedback(strength: UIImpactFeedbackGenerator.FeedbackStyle) {
@@ -617,6 +658,62 @@ class ReplateCameraView: UIView, ARSessionDelegate {
         print("Gravity vector: x = \(gravity.x), y = \(gravity.y), z = \(gravity.z)")
       }
     }
+  }
+  
+  // MARK: - Lifecycle Management
+  private func setupAppStateObservers() {
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(appDidEnterBackground),
+      name: UIApplication.didEnterBackgroundNotification,
+      object: nil
+    )
+    
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(appWillEnterForeground),
+      name: UIApplication.willEnterForegroundNotification,
+      object: nil
+    )
+  }
+  
+  @objc private func appDidEnterBackground() {
+    print("[ReplateCameraView] App entered background - pausing AR session")
+    pauseSession()
+  }
+  
+  @objc private func appWillEnterForeground() {
+    print("[ReplateCameraView] App entering foreground - resuming AR session")
+    resumeSession()
+  }
+  
+  private func pauseSession() {
+    guard ReplateCameraView.isSessionActive else { return }
+    
+    ReplateCameraView.arView?.session.pause()
+    ReplateCameraView.motionManager?.stopDeviceMotionUpdates()
+    ReplateCameraView.isSessionActive = false
+    print("[ReplateCameraView] AR session paused")
+  }
+  
+  private func resumeSession() {
+    guard !ReplateCameraView.isSessionActive && !ReplateCameraView.isResetting else { return }
+    guard ReplateCameraView.arView != nil else { return }
+    
+    let configuration = ARWorldTrackingConfiguration()
+    configuration.isLightEstimationEnabled = true
+    configuration.planeDetection = .horizontal
+    
+    ReplateCameraView.arView?.session.run(configuration)
+    startDeviceMotionUpdates()
+    ReplateCameraView.isSessionActive = true
+    print("[ReplateCameraView] AR session resumed")
+  }
+  
+  deinit {
+    NotificationCenter.default.removeObserver(self)
+    pauseSession()
+    print("[ReplateCameraView] Component deinit - AR session cleaned up")
   }
 
 }
@@ -819,6 +916,27 @@ class ReplateCameraController: NSObject {
     func reset() {
         DispatchQueue.main.async {
             ReplateCameraView.reset()
+        }
+    }
+    
+    @objc
+    func pauseSession() {
+        DispatchQueue.main.async {
+            ReplateCameraView.INSTANCE?.pauseSession()
+        }
+    }
+    
+    @objc
+    func resumeSession() {
+        DispatchQueue.main.async {
+            ReplateCameraView.INSTANCE?.resumeSession()
+        }
+    }
+    
+    @objc
+    func stopSession() {
+        DispatchQueue.main.async {
+            ReplateCameraView.tearDownARSession()
         }
     }
 

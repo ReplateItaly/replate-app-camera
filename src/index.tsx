@@ -93,3 +93,15 @@ export function getMemoryUsage(): Promise<{memoryUsageMB: number}> {
 export function reset() {
   ReplateCameraModule.reset();
 }
+
+export function pauseSession() {
+  ReplateCameraModule.pauseSession();
+}
+
+export function resumeSession() {
+  ReplateCameraModule.resumeSession();
+}
+
+export function stopSession() {
+  ReplateCameraModule.stopSession();
+}

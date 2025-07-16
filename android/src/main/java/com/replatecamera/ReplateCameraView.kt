@@ -10,6 +10,8 @@ import android.os.Build
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
+import android.os.SystemClock
 import android.util.AttributeSet
 import android.util.Log
 import android.view.GestureDetector
@@ -22,7 +24,11 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.exifinterface.media.ExifInterface
 import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
 import com.google.ar.core.Anchor
+import com.google.ar.core.Session
 import com.google.ar.core.HitResult
 import com.google.ar.core.Plane
 import com.google.ar.core.TrackingState
@@ -63,7 +69,7 @@ class ReplateCameraView @JvmOverloads constructor(
   attrs: AttributeSet? = null,
   defStyleAttr: Int = 0
 ) : FrameLayout(context, attrs, defStyleAttr), Scene.OnUpdateListener,
-  android.hardware.SensorEventListener {
+  android.hardware.SensorEventListener, DefaultLifecycleObserver {
 
   companion object {
     private const val TAG = "ReplateCameraView"
@@ -95,6 +101,20 @@ class ReplateCameraView @JvmOverloads constructor(
   // AR Sceneform stuff
   private lateinit var arFragment: ArFragment
   private var anchorNode: AnchorNode? = null
+  private var isSessionPaused = false
+  private var isViewAttached = false
+  private var sensorManager: android.hardware.SensorManager? = null
+  private var gravitySensor: android.hardware.Sensor? = null
+  private var powerManager: PowerManager? = null
+  private var lastSessionStartTime = 0L
+  private var sessionTimeoutHandler: Handler? = null
+  private var sessionTimeoutRunnable: Runnable? = null
+  
+  // Overheating prevention constants
+  private companion object {
+    const val MAX_CONTINUOUS_SESSION_TIME = 30 * 60 * 1000L // 30 minutes
+    const val THERMAL_BREAK_DURATION = 5 * 60 * 1000L // 5 minutes
+  }
 
   // Spheres and a "focus node"
   private val spheresModels = mutableListOf<TransformableNode>()
@@ -127,11 +147,28 @@ class ReplateCameraView @JvmOverloads constructor(
     scaleDetector = ScaleGestureDetector(context, ScaleListener())
 
     // Register a gravity sensor to replicate iOS's CMMotionManager
-    val sensorManager = context.getSystemService(Context.SENSOR_SERVICE)
+    sensorManager = context.getSystemService(Context.SENSOR_SERVICE)
       as? android.hardware.SensorManager
-    sensorManager?.getDefaultSensor(android.hardware.Sensor.TYPE_GRAVITY)?.also { gravitySensor ->
-      sensorManager.registerListener(this, gravitySensor, android.hardware.SensorManager.SENSOR_DELAY_GAME)
-    }
+    gravitySensor = sensorManager?.getDefaultSensor(android.hardware.Sensor.TYPE_GRAVITY)
+    
+    // Register for lifecycle events
+    ProcessLifecycleOwner.get().lifecycle.addObserver(this)
+    
+    // Initialize power manager for thermal monitoring
+    powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+    
+    // Initialize session timeout handler
+    sessionTimeoutHandler = Handler(Looper.getMainLooper())
+    
+    // Register sensor when view is ready
+    registerSensorListener()
+    isViewAttached = true
+    
+    // Record session start time
+    lastSessionStartTime = SystemClock.elapsedRealtime()
+    
+    // Start session timeout monitoring
+    startSessionTimeoutMonitoring()
   }
 
   /**
@@ -188,6 +225,9 @@ class ReplateCameraView @JvmOverloads constructor(
   override fun onUpdate(frameTime: FrameTime?) {
     val frame = arFragment.arSceneView.arFrame ?: return
     if (frame.camera.trackingState != TrackingState.TRACKING) return
+
+    // Check thermal state periodically to prevent overheating
+    checkThermalState()
 
     // If you need per-frame logic, do it here.
     // Example: check lighting, or do real-time distance checks, etc.
@@ -429,42 +469,259 @@ class ReplateCameraView @JvmOverloads constructor(
   }
 
   // ------------------------------------------------------------------------
+  // Lifecycle Management
+  // ------------------------------------------------------------------------
+  
+  override fun onAttachedToWindow() {
+    super.onAttachedToWindow()
+    isViewAttached = true
+    if (isSessionPaused) {
+      resumeSession()
+    }
+  }
+  
+  override fun onDetachedFromWindow() {
+    super.onDetachedFromWindow()
+    isViewAttached = false
+    pauseSession()
+    cleanupResources()
+  }
+  
+  override fun onStart(owner: LifecycleOwner) {
+    super.onStart(owner)
+    if (isViewAttached) {
+      resumeSession()
+    }
+  }
+  
+  override fun onStop(owner: LifecycleOwner) {
+    super.onStop(owner)
+    pauseSession()
+  }
+  
+  override fun onDestroy(owner: LifecycleOwner) {
+    super.onDestroy(owner)
+    cleanupResources()
+    ProcessLifecycleOwner.get().lifecycle.removeObserver(this)
+  }
+  
+  /**
+   * Pauses the AR session and unregisters sensors to prevent overheating
+   */
+  private fun pauseSession() {
+    if (isSessionPaused) return
+    
+    try {
+      // Pause AR session
+      arFragment.arSceneView.session?.pause()
+      
+      // Unregister sensor listener
+      unregisterSensorListener()
+      
+      // Remove scene update listener
+      arFragment.arSceneView.scene.removeOnUpdateListener(this)
+      
+      isSessionPaused = true
+      Log.d(TAG, "AR session paused")
+    } catch (e: Exception) {
+      Log.e(TAG, "Error pausing AR session: ${e.message}")
+    }
+  }
+  
+  /**
+   * Resumes the AR session and re-registers sensors
+   */
+  private fun resumeSession() {
+    if (!isSessionPaused) return
+    
+    try {
+      // Resume AR session
+      arFragment.arSceneView.session?.resume()
+      
+      // Re-register sensor listener
+      registerSensorListener()
+      
+      // Re-add scene update listener
+      arFragment.arSceneView.scene.addOnUpdateListener(this)
+      
+      isSessionPaused = false
+      Log.d(TAG, "AR session resumed")
+    } catch (e: Exception) {
+      Log.e(TAG, "Error resuming AR session: ${e.message}")
+    }
+  }
+  
+  /**
+   * Registers the gravity sensor listener
+   */
+  private fun registerSensorListener() {
+    try {
+      gravitySensor?.let { sensor ->
+        sensorManager?.registerListener(
+          this, 
+          sensor, 
+          android.hardware.SensorManager.SENSOR_DELAY_GAME
+        )
+      }
+    } catch (e: Exception) {
+      Log.e(TAG, "Error registering sensor listener: ${e.message}")
+    }
+  }
+  
+  /**
+   * Unregisters the gravity sensor listener
+   */
+  private fun unregisterSensorListener() {
+    try {
+      sensorManager?.unregisterListener(this)
+    } catch (e: Exception) {
+      Log.e(TAG, "Error unregistering sensor listener: ${e.message}")
+    }
+  }
+  
+  /**
+   * Cleans up all resources including AR session, sensors, and nodes
+   */
+  private fun cleanupResources() {
+    try {
+      // Stop session timeout monitoring
+      stopSessionTimeoutMonitoring()
+      
+      // Clean up AR session
+      arFragment.arSceneView.session?.close()
+      
+      // Unregister sensor listener
+      unregisterSensorListener()
+      
+      // Remove scene listener
+      arFragment.arSceneView.scene.removeOnUpdateListener(this)
+      
+      // Clean up nodes
+      anchorNode?.let { node ->
+        node.children.forEach { child ->
+          node.removeChild(child)
+        }
+        arFragment.arSceneView.scene.removeChild(node)
+      }
+      
+      // Clear references
+      anchorNode = null
+      spheresModels.clear()
+      focusNode = null
+      
+      Log.d(TAG, "Resources cleaned up")
+    } catch (e: Exception) {
+      Log.e(TAG, "Error cleaning up resources: ${e.message}")
+    }
+  }
+  
+  /**
+   * Starts monitoring session timeout to prevent overheating
+   */
+  private fun startSessionTimeoutMonitoring() {
+    sessionTimeoutRunnable = Runnable {
+      Log.w(TAG, "Session timeout reached, pausing to prevent overheating")
+      pauseSession()
+      
+      // Schedule resume after thermal break
+      sessionTimeoutHandler?.postDelayed({
+        Log.i(TAG, "Thermal break complete, resuming session")
+        lastSessionStartTime = SystemClock.elapsedRealtime()
+        resumeSession()
+        startSessionTimeoutMonitoring()
+      }, THERMAL_BREAK_DURATION)
+    }
+    
+    sessionTimeoutHandler?.postDelayed(
+      sessionTimeoutRunnable!!, 
+      MAX_CONTINUOUS_SESSION_TIME
+    )
+  }
+  
+  /**
+   * Stops session timeout monitoring
+   */
+  private fun stopSessionTimeoutMonitoring() {
+    sessionTimeoutRunnable?.let { runnable ->
+      sessionTimeoutHandler?.removeCallbacks(runnable)
+    }
+    sessionTimeoutRunnable = null
+  }
+  
+  /**
+   * Checks if device is in thermal state and pauses session if needed
+   */
+  private fun checkThermalState() {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      powerManager?.let { pm ->
+        val thermalStatus = pm.thermalStatus
+        when (thermalStatus) {
+          PowerManager.THERMAL_STATUS_MODERATE,
+          PowerManager.THERMAL_STATUS_SEVERE,
+          PowerManager.THERMAL_STATUS_CRITICAL,
+          PowerManager.THERMAL_STATUS_EMERGENCY,
+          PowerManager.THERMAL_STATUS_SHUTDOWN -> {
+            Log.w(TAG, "Device thermal status: $thermalStatus, pausing AR session")
+            pauseSession()
+          }
+          else -> {
+            // Device is cool, safe to continue
+            if (isSessionPaused && isViewAttached) {
+              resumeSession()
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  // ------------------------------------------------------------------------
   // Reset Logic
   // ------------------------------------------------------------------------
   /**
    * Resets the AR session, removing anchors and restoring default geometry.
    */
   fun resetSession() {
-    anchorNode?.let { node ->
-      node.children.forEach { child ->
-        node.removeChild(child)
+    try {
+      // Clean up existing nodes
+      anchorNode?.let { node ->
+        node.children.forEach { child ->
+          node.removeChild(child)
+        }
+        arFragment.arSceneView.scene.removeChild(node)
       }
-      arFragment.arSceneView.scene.removeChild(node)
+      anchorNode = null
+      spheresModels.clear()
+      focusNode = null
+
+      // Reset booleans
+      for (i in upperSpheresSet.indices) {
+        upperSpheresSet[i] = false
+        lowerSpheresSet[i] = false
+      }
+      totalPhotosTaken = 0
+      photosFromDifferentAnglesTaken = 0
+
+      // Reset geometry
+      sphereRadius = DEFAULT_SPHERE_RADIUS
+      spheresRadius = DEFAULT_SPHERES_RADIUS
+      sphereAngle = ANGLE_INCREMENT_DEGREES
+      spheresHeight = DEFAULT_SPHERES_HEIGHT
+      distanceBetweenCircles = DEFAULT_DISTANCE_BETWEEN_CIRCLES
+      circleInFocus = 0
+      dragSpeed = DEFAULT_DRAG_SPEED
+
+      // Properly reset AR session
+      arFragment.arSceneView.session?.close()
+      setupArFragment()
+      
+      // Restart session timeout monitoring after reset
+      lastSessionStartTime = SystemClock.elapsedRealtime()
+      startSessionTimeoutMonitoring()
+      
+      Log.d(TAG, "AR session reset successfully")
+    } catch (e: Exception) {
+      Log.e(TAG, "Error resetting AR session: ${e.message}")
     }
-    anchorNode = null
-    spheresModels.clear()
-    focusNode = null
-
-    // Reset booleans
-    for (i in upperSpheresSet.indices) {
-      upperSpheresSet[i] = false
-      lowerSpheresSet[i] = false
-    }
-    totalPhotosTaken = 0
-    photosFromDifferentAnglesTaken = 0
-
-    // Reset geometry
-    sphereRadius = DEFAULT_SPHERE_RADIUS
-    spheresRadius = DEFAULT_SPHERES_RADIUS
-    sphereAngle = ANGLE_INCREMENT_DEGREES
-    spheresHeight = DEFAULT_SPHERES_HEIGHT
-    distanceBetweenCircles = DEFAULT_DISTANCE_BETWEEN_CIRCLES
-    circleInFocus = 0
-    dragSpeed = DEFAULT_DRAG_SPEED
-
-    // If you want to fully re-init the AR session, you could do:
-    // arFragment.arSceneView.session?.close()
-    // setupArFragment()
-    // But that may require re-attaching the fragment, so it depends on your usage.
   }
 }
