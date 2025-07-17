@@ -70,6 +70,9 @@ class ReplateCameraView: UIView, ARSessionDelegate {
   static var sessionId: UUID!
   static var motionManager: CMMotionManager!
   static var gravityVector: [String : Double] = [:]
+  
+  // Track if view is currently attached to window
+  private var isViewAttached = false
 
   // Tap handling state
   private static var isProcessingTap = false
@@ -126,6 +129,7 @@ class ReplateCameraView: UIView, ARSessionDelegate {
     requestCameraPermissions()
     ReplateCameraView.INSTANCE = self
     setupAppStateObservers()
+    isViewAttached = true
   }
 
     // MARK: - Layout
@@ -140,7 +144,9 @@ class ReplateCameraView: UIView, ARSessionDelegate {
 
     override func removeFromSuperview() {
         print("[ReplateCameraView] View being removed from superview - cleaning up AR session")
+        isViewAttached = false
         pauseSession()
+        cleanupAppStateObservers()
         super.removeFromSuperview()
     }
 
@@ -627,11 +633,13 @@ class ReplateCameraView: UIView, ARSessionDelegate {
   func sessionInterruptionEnded(_ session: ARSession) {
     print("SESSION RESUMED")
 
-    // Only resume if we should still be active
-    if !ReplateCameraView.isResetting && ReplateCameraView.INSTANCE != nil {
+    // Only resume if we should still be active and view is attached
+    if !ReplateCameraView.isResetting && ReplateCameraView.INSTANCE != nil && ReplateCameraView.INSTANCE.isViewAttached {
       ReplateCameraView.INSTANCE.startDeviceMotionUpdates()
       ReplateCameraView.isSessionActive = true
       print("[ReplateCameraView] AR session resumed after interruption")
+    } else {
+      print("[ReplateCameraView] View not attached - skipping AR session resume after interruption")
     }
   }
 
@@ -683,8 +691,14 @@ class ReplateCameraView: UIView, ARSessionDelegate {
   }
 
   @objc private func appWillEnterForeground() {
-    print("[ReplateCameraView] App entering foreground - resuming AR session")
-    resumeSession()
+    print("[ReplateCameraView] App entering foreground")
+    // Only resume if the view is still attached and active
+    if isViewAttached && ReplateCameraView.INSTANCE != nil {
+      print("[ReplateCameraView] View is attached - resuming AR session")
+      resumeSession()
+    } else {
+      print("[ReplateCameraView] View not attached - skipping AR session resume")
+    }
   }
 
 func pauseSession() {
@@ -699,6 +713,12 @@ func pauseSession() {
 func resumeSession() {
     guard !ReplateCameraView.isSessionActive && !ReplateCameraView.isResetting else { return }
     guard ReplateCameraView.arView != nil else { return }
+    
+    // Additional guard: only resume if view is still attached
+    guard isViewAttached && ReplateCameraView.INSTANCE != nil else {
+      print("[ReplateCameraView] View not attached - refusing to resume AR session")
+      return
+    }
 
     let configuration = ARWorldTrackingConfiguration()
     configuration.isLightEstimationEnabled = true
@@ -710,8 +730,23 @@ func resumeSession() {
     print("[ReplateCameraView] AR session resumed")
   }
 
+  private func cleanupAppStateObservers() {
+    NotificationCenter.default.removeObserver(
+      self,
+      name: UIApplication.didEnterBackgroundNotification,
+      object: nil
+    )
+    NotificationCenter.default.removeObserver(
+      self,
+      name: UIApplication.willEnterForegroundNotification,
+      object: nil
+    )
+    print("[ReplateCameraView] App state observers cleaned up")
+  }
+
   deinit {
-    NotificationCenter.default.removeObserver(self)
+    isViewAttached = false
+    cleanupAppStateObservers()
     pauseSession()
     print("[ReplateCameraView] Component deinit - AR session cleaned up")
   }
