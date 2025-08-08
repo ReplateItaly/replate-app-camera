@@ -419,7 +419,7 @@ class ReplateCameraView @JvmOverloads constructor(
             val node = spheresModels[i]
             val material = node.renderable?.material?.makeCopy()
             if (material != null) {
-                val color = (material.getFloat3("color") ?: Color(1f,1f,1f))
+                val color = Color(1f, 1f, 1f)
                 material.setFloat4("color", color.r, color.g, color.b, opacity)
                 node.renderable?.material = material
             }
@@ -514,7 +514,7 @@ class ReplateCameraView @JvmOverloads constructor(
   }
 
   private fun angleBetweenAnchorXAndCamera(anchor: AnchorNode, cameraTransform: com.google.ar.core.Pose): Float {
-    val anchorTransform = anchor.worldPose
+    val anchorTransform = anchor.anchor?.pose ?: return 0f
     val anchorPositionXZ = Vector3(anchorTransform.tx(), 0f, anchorTransform.tz())
     val cameraPositionXZ = Vector3(cameraTransform.tx(), 0f, cameraTransform.tz())
 
@@ -740,7 +740,7 @@ class ReplateCameraView @JvmOverloads constructor(
   private fun checkThermalState() {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
       powerManager?.let { pm ->
-        val thermalStatus = pm.thermalStatus
+        val thermalStatus = pm.currentThermalStatus
         when (thermalStatus) {
           PowerManager.THERMAL_STATUS_MODERATE,
           PowerManager.THERMAL_STATUS_SEVERE,
@@ -809,5 +809,18 @@ class ReplateCameraView @JvmOverloads constructor(
     } catch (e: Exception) {
       Log.e(TAG, "Error resetting AR session: ${e.message}")
     }
+  }
+  
+  // Public wrapper methods for module access
+  fun pauseSessionPublic() {
+    pauseSession()
+  }
+  
+  fun resumeSessionPublic() {
+    resumeSession()
+  }
+  
+  fun cleanupResourcesPublic() {
+    cleanupResources()
   }
 }

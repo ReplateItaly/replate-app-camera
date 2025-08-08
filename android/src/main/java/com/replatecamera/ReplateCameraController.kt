@@ -165,7 +165,7 @@ class ReplateCameraController(
             // Check distance
             if (!cameraView.checkCameraDistance(deviceTargetInfo)) {
                 callback.reject(ARError.NotInRange)
-                return
+                return@post
             }
 
             // Update spheres and get result
@@ -226,7 +226,7 @@ class ReplateCameraController(
 
     private fun getDeviceTargetInfo(anchorNode: AnchorNode, frame: Frame): DeviceTargetInfo {
         val cameraTransform = frame.camera.pose
-        val anchorTransform = anchorNode.worldPose
+        val anchorTransform = anchorNode.anchor?.pose ?: return DeviceTargetInfo(false, 0, cameraTransform, Vector3.zero(), Vector3.zero())
 
         val cameraPosition = Vector3(cameraTransform.tx(), cameraTransform.ty(), cameraTransform.tz())
         val anchorPosition = Vector3(anchorTransform.tx(), anchorTransform.ty(), anchorTransform.tz())
@@ -237,7 +237,7 @@ class ReplateCameraController(
         val angleToAnchor = Vector3.dot(cameraDirection, directionToAnchor)
 
         val isInFocus = angleToAnchor < ANGLE_THRESHOLD
-        val targetIndex = if (cameraPosition.y < anchorPosition.y + ReplateCameraView.DEFAULT_SPHERES_HEIGHT) 0 else 1
+        val targetIndex = if (cameraPosition.y < anchorPosition.y + 0.10f) 0 else 1
 
         return DeviceTargetInfo(
             isInFocus = isInFocus,

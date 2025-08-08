@@ -79,19 +79,19 @@ class ReplateCameraModule(private val reactContext: ReactApplicationContext) :
   @ReactMethod
   fun pauseSession(viewTag: Int) {
     val cameraView = findCameraViewByTag(viewTag)
-    cameraView?.pauseSession()
+    cameraView?.pauseSessionPublic()
   }
 
   @ReactMethod
   fun resumeSession(viewTag: Int) {
     val cameraView = findCameraViewByTag(viewTag)
-    cameraView?.resumeSession()
+    cameraView?.resumeSessionPublic()
   }
 
   @ReactMethod
   fun stopSession(viewTag: Int) {
     val cameraView = findCameraViewByTag(viewTag)
-    cameraView?.cleanupResources()
+    cameraView?.cleanupResourcesPublic()
   }
 
   private fun findCameraViewByTag(viewTag: Int): ReplateCameraView? {
@@ -100,7 +100,7 @@ class ReplateCameraModule(private val reactContext: ReactApplicationContext) :
     return nativeView as? ReplateCameraView
   }
 
-  override fun getExportedCustomDirectEventTypeConstants(): MutableMap<String, Any> {
+  fun getExportedCustomDirectEventTypeConstants(): MutableMap<String, Any> {
     return mutableMapOf(
       "onAnchorSet" to mutableMapOf("registrationName" to "onAnchorSet"),
       "onTooClose" to mutableMapOf("registrationName" to "onTooClose"),
