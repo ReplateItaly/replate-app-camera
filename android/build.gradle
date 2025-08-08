@@ -1,6 +1,6 @@
 buildscript {
   // Buildscript is evaluated before everything else so we can't use getExtOrDefault
-  def kotlin_version = rootProject.ext.has("kotlinVersion") ? rootProject.ext.get("kotlinVersion") : project.properties["ReplateCamera_kotlinVersion"]
+  def kotlin_version = rootProject.ext.has("kotlinVersion") ? rootProject.ext.get("kotlinVersion") : "1.9.22"
 
   repositories {
     google()
@@ -8,7 +8,7 @@ buildscript {
   }
 
   dependencies {
-    classpath "com.android.tools.build:gradle:7.2.1"
+    classpath "com.android.tools.build:gradle:8.4.0"
     // noinspection DifferentKotlinGradleVersion
     classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
   }
@@ -33,26 +33,8 @@ def getExtOrIntegerDefault(name) {
   return rootProject.ext.has(name) ? rootProject.ext.get(name) : (project.properties["ReplateCamera_" + name]).toInteger()
 }
 
-def supportsNamespace() {
-  def parsed = com.android.Version.ANDROID_GRADLE_PLUGIN_VERSION.tokenize('.')
-  def major = parsed[0].toInteger()
-  def minor = parsed[1].toInteger()
-
-  // Namespace support was added in 7.3.0
-  return (major == 7 && minor >= 3) || major >= 8
-}
-
 android {
-  if (supportsNamespace()) {
-    namespace "com.replatecamera"
-
-    sourceSets {
-      main {
-        manifest.srcFile "src/main/AndroidManifestNew.xml"
-      }
-    }
-  }
-
+  namespace "com.replatecamera"
   compileSdkVersion getExtOrIntegerDefault("compileSdkVersion")
 
   defaultConfig {
@@ -72,8 +54,12 @@ android {
   }
 
   compileOptions {
-    sourceCompatibility JavaVersion.VERSION_1_8
-    targetCompatibility JavaVersion.VERSION_1_8
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
+  }
+
+  kotlinOptions {
+    jvmTarget = "17"
   }
 }
 
@@ -94,5 +80,7 @@ dependencies {
   implementation 'com.google.ar:core:1.45.0'
   implementation 'com.google.ar.sceneform.ux:sceneform-ux:1.17.1'
   implementation("androidx.exifinterface:exifinterface:1.3.7")
+  implementation "androidx.lifecycle:lifecycle-process:2.6.1"
+  implementation 'com.google.android.material:material:1.12.0'
 }
 

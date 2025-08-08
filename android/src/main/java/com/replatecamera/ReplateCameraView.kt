@@ -39,6 +39,10 @@ import com.google.ar.sceneform.rendering.Material
 import com.google.ar.sceneform.rendering.MaterialFactory
 import com.google.ar.sceneform.rendering.ShapeFactory
 import com.google.ar.sceneform.ux.ArFragment
+import com.facebook.react.bridge.Arguments
+import com.facebook.react.bridge.WritableMap
+import com.facebook.react.uimanager.ThemedReactContext
+import com.facebook.react.uimanager.events.RCTEventEmitter
 import com.google.ar.sceneform.ux.TransformableNode
 import java.io.File
 import java.io.FileOutputStream
@@ -96,6 +100,10 @@ class ReplateCameraView @JvmOverloads constructor(
     // Stats
     var totalPhotosTaken = 0
     var photosFromDifferentAnglesTaken = 0
+
+    // Overheating prevention constants
+    const val MAX_CONTINUOUS_SESSION_TIME = 30 * 60 * 1000L // 30 minutes
+    const val THERMAL_BREAK_DURATION = 5 * 60 * 1000L // 5 minutes
   }
 
   // AR Sceneform stuff
@@ -109,16 +117,10 @@ class ReplateCameraView @JvmOverloads constructor(
   private var lastSessionStartTime = 0L
   private var sessionTimeoutHandler: Handler? = null
   private var sessionTimeoutRunnable: Runnable? = null
-  
-  // Overheating prevention constants
-  private companion object {
-    const val MAX_CONTINUOUS_SESSION_TIME = 30 * 60 * 1000L // 30 minutes
-    const val THERMAL_BREAK_DURATION = 5 * 60 * 1000L // 5 minutes
-  }
 
   // Spheres and a "focus node"
   private val spheresModels = mutableListOf<TransformableNode>()
-  private var focusNode: Node? = null
+  private var focusNode: FocusNode? = null
 
   // Scene geometry
   private var sphereRadius = DEFAULT_SPHERE_RADIUS
@@ -132,9 +134,15 @@ class ReplateCameraView @JvmOverloads constructor(
   // Gravity vector
   private var gravityVector = mutableMapOf<String, Double>()
 
+  // Callback registration
+  private var wasOutOfRange = false
+
   // Gesture detectors for custom pan/pinch (replicating Swift approach)
   private var gestureDetector: GestureDetector
   private var scaleDetector: ScaleGestureDetector
+
+  // Controller
+  private lateinit var cameraController: ReplateCameraController
 
   // ------------------------------------------------------------------------
   // Init & Setup
@@ -198,13 +206,25 @@ class ReplateCameraView @JvmOverloads constructor(
     // Add an update listener
     arFragment.arSceneView.scene.addOnUpdateListener(this)
 
+    // Initialize the controller
+    cameraController = ReplateCameraController(context, arFragment.arSceneView, this)
+
     // Listen for plane taps
+    arFragment.arSceneView.planeRenderer.isEnabled = true
+    sendEvent("onOpenedTutorial")
+
+    focusNode = FocusNode(context, arFragment)
+    arFragment.arSceneView.scene.addChild(focusNode)
+
     arFragment.setOnTapArPlaneListener { hitResult: HitResult, plane: Plane, motionEvent: MotionEvent ->
       if (anchorNode == null) {
         anchorNode = createAnchorNode(hitResult)
         createSpheresAtY(spheresHeight) // Lower circle
         createSpheresAtY(distanceBetweenCircles + spheresHeight) // Upper circle
-        createFocusSphere()
+        sendEvent("onAnchorSet")
+        arFragment.arSceneView.planeRenderer.isEnabled = false
+        sendEvent("onCompletedTutorial")
+        focusNode?.isEnabled = false
       }
     }
   }
@@ -259,37 +279,6 @@ class ReplateCameraView @JvmOverloads constructor(
       }
   }
 
-  @RequiresApi(Build.VERSION_CODES.N)
-  private fun createFocusSphere() {
-    // Parent node for the two green spheres + optional overlay
-    val parentNode = Node().apply { setParent(anchorNode) }
-    focusNode = parentNode
-
-    // Lower focus sphere
-    MaterialFactory.makeOpaqueWithColor(context, Color(0f, 1f, 0f))
-      .thenAccept { mat ->
-        val r = sphereRadius * 1.5f
-        val renderable = ShapeFactory.makeSphere(r, Vector3.zero(), mat)
-        val sphereN = Node()
-        sphereN.worldPosition = Vector3(0f, spheresHeight, 0f)
-        sphereN.renderable = renderable
-        parentNode.addChild(sphereN)
-      }
-
-    // Upper focus sphere
-    MaterialFactory.makeOpaqueWithColor(context, Color(0f, 1f, 0f))
-      .thenAccept { mat ->
-        val r = sphereRadius * 1.5f
-        val renderable = ShapeFactory.makeSphere(r, Vector3.zero(), mat)
-        val sphereN = Node()
-        sphereN.worldPosition = Vector3(0f, spheresHeight + distanceBetweenCircles, 0f)
-        sphereN.renderable = renderable
-        parentNode.addChild(sphereN)
-      }
-
-    // If you have a custom "center.obj", load via ModelRenderable builder or Filament loader
-    // parentNode.addChild(loadedCustomOverlayNode)
-  }
 
   // ------------------------------------------------------------------------
   // Gestures (Mirror Swift's tap, pan, pinch)
@@ -301,8 +290,15 @@ class ReplateCameraView @JvmOverloads constructor(
   }
 
   private inner class GestureListener : GestureDetector.SimpleOnGestureListener() {
+    private var lastTapTime: Long = 0
 
     override fun onSingleTapUp(e: MotionEvent): Boolean {
+      val currentTime = System.currentTimeMillis()
+      if (currentTime - lastTapTime < 500) { // 500ms debounce
+        return true
+      }
+      lastTapTime = currentTime
+
       Log.d(TAG, "Single tap up at x=${e.x}, y=${e.y}")
       // If you want custom logic (like Swift's "viewTapped"), put it here
       return true
@@ -355,27 +351,10 @@ class ReplateCameraView @JvmOverloads constructor(
 
   private inner class ScaleListener : ScaleGestureDetector.SimpleOnScaleGestureListener() {
     override fun onScale(detector: ScaleGestureDetector): Boolean {
-      // Like Swift handlePinch => remove child spheres, scale, recreate
       val currentAnchor = anchorNode ?: return false
-      val scale = detector.scaleFactor
-
-      // Remove all existing spheres
-      spheresModels.forEach { node -> currentAnchor.removeChild(node) }
-      spheresModels.clear()
-
-      // Remove focus
-      focusNode?.let { currentAnchor.removeChild(it) }
-      focusNode = null
-
-      // Scale the radii
-      sphereRadius *= scale
-      spheresRadius *= scale
-      sphereAngle *= scale  // if also scaling the angle
-      // Rebuild
-      createSpheresAtY(spheresHeight)
-      createSpheresAtY(distanceBetweenCircles + spheresHeight)
-      createFocusSphere()
-
+      val scaleFactor = detector.scaleFactor
+      val newScale = Vector3.add(currentAnchor.localScale, Vector3(scaleFactor - 1, scaleFactor - 1, scaleFactor - 1))
+      currentAnchor.localScale = newScale
       return true
     }
   }
@@ -389,67 +368,177 @@ class ReplateCameraView @JvmOverloads constructor(
    *
    * @param onPhotoSaved Callback that gives you the Uri of the saved file (or null on failure).
    */
-  fun takePhoto(onPhotoSaved: (Uri?) -> Unit = {}) {
-    val sceneView: ArSceneView = arFragment.arSceneView
+  fun takePhoto(onPhotoAvailable: (Bitmap?) -> Unit) {
+    val sceneView = arFragment.arSceneView
     val bitmap = Bitmap.createBitmap(sceneView.width, sceneView.height, Bitmap.Config.ARGB_8888)
+    val handlerThread = Handler()
 
     PixelCopy.request(sceneView, bitmap, { copyResult ->
       if (copyResult == PixelCopy.SUCCESS) {
-        // Save + embed EXIF
-        val savedUri = saveBitmapWithExif(bitmap, gravityVector)
-        if (savedUri != null) {
-          totalPhotosTaken += 1
-          Log.d(TAG, "Photo saved to: $savedUri")
-          onPhotoSaved(savedUri)
-        } else {
-          Log.e(TAG, "Failed to save photo.")
-          onPhotoSaved(null)
-        }
+        onPhotoAvailable(bitmap)
       } else {
-        Log.e(TAG, "PixelCopy failed with code $copyResult")
-        onPhotoSaved(null)
+        Log.e(TAG, "Failed to copy bitmap: $copyResult")
+        onPhotoAvailable(null)
       }
-    }, Handler(Looper.getMainLooper()))
+    }, handlerThread)
   }
 
-  /**
-   * Save the [bitmap] into JPEG. Then embed an EXIF “UserComment” that includes the gravity vector.
-   */
-  private fun saveBitmapWithExif(
-    bitmap: Bitmap,
-    gravity: Map<String, Double>
-  ): Uri? {
-    val picturesDir = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: return null
-    val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss").format(Date())
-    val file = File(picturesDir, "AR_Capture_$timeStamp.jpg")
+  fun getAnchorNode(): AnchorNode? {
+    return anchorNode
+  }
 
-    return try {
-      // Write JPEG
-      FileOutputStream(file).use { out ->
-        bitmap.compress(Bitmap.CompressFormat.JPEG, 100, out)
-        out.flush()
-      }
+  fun getCameraController(): ReplateCameraController {
+    return cameraController
+  }
 
-      // Now embed EXIF metadata
-      val exif = ExifInterface(file.absolutePath)
-      // Convert gravity vector to JSON-like string
-      val gx = gravity["x"] ?: 0.0
-      val gy = gravity["y"] ?: 0.0
-      val gz = gravity["z"] ?: 0.0
+  fun getGravityVector(): Map<String, Double> {
+    return gravityVector
+  }
 
-      // Example JSON
-      // { "gravity": { "x":0.123, "y":-0.456, "z":9.81 } }
-      val gravityJson = """{ "gravity": { "x": $gx, "y": $gy, "z": $gz } }"""
-
-      exif.setAttribute(ExifInterface.TAG_USER_COMMENT, gravityJson)
-      // Save EXIF
-      exif.saveAttributes()
-
-      Uri.fromFile(file)
-    } catch (e: Exception) {
-      Log.e(TAG, "Error saving or updating EXIF: ${e.message}")
-      null
+  fun updateCircleFocus(targetIndex: Int) {
+    if (targetIndex != circleInFocus) {
+        setOpacityToCircle(circleInFocus, 0.5f)
+        setOpacityToCircle(targetIndex, 1.0f)
+        circleInFocus = targetIndex
+        performHapticFeedback()
     }
+  }
+
+  private fun performHapticFeedback() {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as android.os.Vibrator
+        vibrator.vibrate(android.os.VibrationEffect.createOneShot(50, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
+    }
+  }
+
+  private fun setOpacityToCircle(circleId: Int, opacity: Float) {
+    val start = if (circleId == 0) 0 else TOTAL_SPHERES_PER_CIRCLE
+    val end = start + TOTAL_SPHERES_PER_CIRCLE
+    for (i in start until end) {
+        if (i < spheresModels.size) {
+            val node = spheresModels[i]
+            val material = node.renderable?.material?.makeCopy()
+            if (material != null) {
+                val color = (material.getFloat3("color") ?: Color(1f,1f,1f))
+                material.setFloat4("color", color.r, color.g, color.b, opacity)
+                node.renderable?.material = material
+            }
+        }
+    }
+  }
+
+  fun checkCameraDistance(deviceTargetInfo: DeviceTargetInfo): Boolean {
+    val distance = isCameraWithinRange(deviceTargetInfo.transform, anchorNode!!)
+
+    when (distance) {
+        1 -> {
+            wasOutOfRange = true
+            sendEvent("onTooFar")
+            return false
+        }
+        -1 -> {
+            wasOutOfRange = true
+            sendEvent("onTooClose")
+            return false
+        }
+        else -> {
+            if (wasOutOfRange) {
+                wasOutOfRange = false
+                sendEvent("onBackInRange")
+            }
+            return true
+        }
+    }
+  }
+
+  private fun isCameraWithinRange(cameraTransform: com.google.ar.core.Pose, anchorNode: AnchorNode): Int {
+    val cameraPosition = Vector3(cameraTransform.tx(), cameraTransform.ty(), cameraTransform.tz())
+    val anchorPosition = anchorNode.worldPosition
+    val distance = Vector3.subtract(cameraPosition, anchorPosition).length()
+
+    return when {
+        distance <= MIN_DISTANCE -> -1
+        distance >= MAX_DISTANCE -> 1
+        else -> 0
+    }
+  }
+
+  private fun sendEvent(eventName: String, params: WritableMap? = null) {
+    val reactContext = context as ThemedReactContext
+    val event = Arguments.createMap().apply {
+        params?.let { putMap("data", it) }
+    }
+    reactContext.getJSModule(RCTEventEmitter::class.java)?.receiveEvent(id, eventName, event)
+  }
+
+  fun updateSpheres(deviceTargetInfo: DeviceTargetInfo, camera: com.google.ar.core.Camera, callback: (Boolean) -> Unit) {
+    val angleDegrees = angleBetweenAnchorXAndCamera(anchorNode!!, camera.pose)
+    val sphereIndex = (round(angleDegrees / 5.0f) % 72).toInt()
+
+    var newAngle = false
+    if (deviceTargetInfo.targetIndex == 1) { // Upper circle
+        if (!upperSpheresSet[sphereIndex]) {
+            upperSpheresSet[sphereIndex] = true
+            photosFromDifferentAnglesTaken++
+            newAngle = true
+            updateSphereColor(72 + sphereIndex, Color(0f, 1f, 0f)) // Green
+            if (upperSpheresSet.all { it }) {
+                sendEvent("onCompletedUpperSpheres")
+            }
+        }
+    } else { // Lower circle
+        if (!lowerSpheresSet[sphereIndex]) {
+            lowerSpheresSet[sphereIndex] = true
+            photosFromDifferentAnglesTaken++
+            newAngle = true
+            updateSphereColor(sphereIndex, Color(0f, 1f, 0f)) // Green
+            if (lowerSpheresSet.all { it }) {
+                sendEvent("onCompletedLowerSpheres")
+            }
+        }
+    }
+
+    if (newAngle) {
+        performHapticFeedback()
+    }
+    callback(newAngle)
+  }
+
+  private fun updateSphereColor(index: Int, color: Color) {
+    if (index < spheresModels.size) {
+        val node = spheresModels[index]
+        val material = node.renderable?.material?.makeCopy()
+        material?.setFloat4("color", color)
+        node.renderable?.material = material
+    }
+  }
+
+  private fun angleBetweenAnchorXAndCamera(anchor: AnchorNode, cameraTransform: com.google.ar.core.Pose): Float {
+    val anchorTransform = anchor.worldPose
+    val anchorPositionXZ = Vector3(anchorTransform.tx(), 0f, anchorTransform.tz())
+    val cameraPositionXZ = Vector3(cameraTransform.tx(), 0f, cameraTransform.tz())
+
+    val directionXZ = Vector3.subtract(cameraPositionXZ, anchorPositionXZ)
+    val anchorXAxisXZ = anchor.right.let { Vector3(it.x, 0f, it.z) }
+
+    var angle = atan2(directionXZ.z, directionXZ.x) - atan2(anchorXAxisXZ.z, anchorXAxisXZ.x)
+    angle = Math.toDegrees(angle.toDouble()).toFloat()
+    if (angle < 0) {
+        angle += 360
+    }
+    return angle
+  }
+
+  fun saveBitmap(bitmap: Bitmap): File {
+    val photoDir = File(context.getExternalFilesDir(null), "photos")
+    if (!photoDir.exists()) {
+      photoDir.mkdirs()
+    }
+    val photoFile = File(photoDir, "replate_${System.currentTimeMillis()}.jpg")
+    FileOutputStream(photoFile).use { out ->
+      bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
+    }
+    return photoFile
   }
 
   // ------------------------------------------------------------------------
@@ -488,19 +577,16 @@ class ReplateCameraView @JvmOverloads constructor(
   }
   
   override fun onStart(owner: LifecycleOwner) {
-    super.onStart(owner)
     if (isViewAttached) {
       resumeSession()
     }
   }
   
   override fun onStop(owner: LifecycleOwner) {
-    super.onStop(owner)
     pauseSession()
   }
   
   override fun onDestroy(owner: LifecycleOwner) {
-    super.onDestroy(owner)
     cleanupResources()
     ProcessLifecycleOwner.get().lifecycle.removeObserver(this)
   }
