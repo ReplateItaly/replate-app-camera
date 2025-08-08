@@ -96,6 +96,10 @@ class ReplateCameraView @JvmOverloads constructor(
     // Stats
     var totalPhotosTaken = 0
     var photosFromDifferentAnglesTaken = 0
+
+    // Overheating prevention constants
+    const val MAX_CONTINUOUS_SESSION_TIME = 30 * 60 * 1000L // 30 minutes
+    const val THERMAL_BREAK_DURATION = 5 * 60 * 1000L // 5 minutes
   }
 
   // AR Sceneform stuff
@@ -109,12 +113,6 @@ class ReplateCameraView @JvmOverloads constructor(
   private var lastSessionStartTime = 0L
   private var sessionTimeoutHandler: Handler? = null
   private var sessionTimeoutRunnable: Runnable? = null
-  
-  // Overheating prevention constants
-  private companion object {
-    const val MAX_CONTINUOUS_SESSION_TIME = 30 * 60 * 1000L // 30 minutes
-    const val THERMAL_BREAK_DURATION = 5 * 60 * 1000L // 5 minutes
-  }
 
   // Spheres and a "focus node"
   private val spheresModels = mutableListOf<TransformableNode>()
@@ -488,19 +486,16 @@ class ReplateCameraView @JvmOverloads constructor(
   }
   
   override fun onStart(owner: LifecycleOwner) {
-    super.onStart(owner)
     if (isViewAttached) {
       resumeSession()
     }
   }
   
   override fun onStop(owner: LifecycleOwner) {
-    super.onStop(owner)
     pauseSession()
   }
   
   override fun onDestroy(owner: LifecycleOwner) {
-    super.onDestroy(owner)
     cleanupResources()
     ProcessLifecycleOwner.get().lifecycle.removeObserver(this)
   }
