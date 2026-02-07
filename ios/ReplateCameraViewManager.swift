@@ -66,6 +66,8 @@ class ReplateCameraView: UIView, ARSessionDelegate {
   // AR View and Core Components
   static var arView: ARView!
   static var anchorEntity: AnchorEntity?
+  // Lock plane detection as soon as anchor is placed
+  static var anchorLocked: Bool = false
   static var model: Entity!
   static var sessionId: UUID!
   static var motionManager: CMMotionManager!
@@ -258,7 +260,14 @@ class ReplateCameraView: UIView, ARSessionDelegate {
     }
 
     let focusTransform = focus.transformMatrix(relativeTo: nil)
+    // Freeze anchoring to the initial world transform so it stays put even if
+    // the detected plane is temporarily lost.
     let anchor = AnchorEntity(world: focusTransform)
+    var anchoring = AnchoringComponent(.world(transform: focusTransform))
+    if #available(iOS 18.0, *) {
+      anchoring.trackingMode = .once
+    }
+    anchor.anchoring = anchoring
     print("ANCHOR FOUND\n", anchor.transform)
 
     // Fire callback
@@ -270,6 +279,7 @@ class ReplateCameraView: UIView, ARSessionDelegate {
 
     // Set the anchor
     ReplateCameraView.anchorEntity = anchor
+    ReplateCameraView.anchorLocked = true
     createSpheres(y: ReplateCameraView.spheresHeight)
     createSpheres(y: ReplateCameraView.distanceBetweenCircles + ReplateCameraView.spheresHeight)
     createFocusSphere()
@@ -279,8 +289,26 @@ class ReplateCameraView: UIView, ARSessionDelegate {
     }
     ReplateCameraView.arView.scene.anchors.append(anchorEntity)
 
+    // --- STOP plane detection after placement ---
+
+let newConfig = ARWorldTrackingConfiguration()
+newConfig.isLightEstimationEnabled = true
+
+// IMPORTANT: disable planes
+newConfig.planeDetection = []
+
+// Keep world tracking WITHOUT resetting anchor
+ReplateCameraView.arView.session.run(
+    newConfig,
+    options: [] // keep existing anchors so the guide stays locked in world space
+)
+
+
     // Hide the focus reticle once an anchor is set
-    ReplateCameraView.focusEntity?.isEnabled = false
+    // Remove focus entity completely after placement
+ReplateCameraView.focusEntity?.setAutoUpdate(to: false)
+ReplateCameraView.focusEntity?.destroy()
+ReplateCameraView.focusEntity = nil
 
     // Reset processing flag
     ReplateCameraView.isProcessingTap = false
@@ -467,6 +495,39 @@ class ReplateCameraView: UIView, ARSessionDelegate {
         }
     }
 
+    static func destroy() {
+    Self.lock.lock()
+    defer { Self.lock.unlock() }
+
+    print("[ReplateCameraView] HARD destroy start")
+
+    // 1) Stop AR session and detach view
+    tearDownARSession()
+
+    // 2) Reset static state and arrays
+    resetProperties()
+
+    // 3) Release focus + entities
+    focusEntity = nil
+    focusModel = nil
+    anchorEntity = nil
+    model = nil
+
+    // 4) Release heavy system objects
+    arView?.session.delegate = nil
+    arView = nil
+    motionManager = nil
+
+    // 5) Kill singleton reference
+    INSTANCE = nil
+
+    // Force autorelease drain
+    autoreleasepool { }
+
+    print("[ReplateCameraView] HARD destroy completed")
+}
+
+
     static func tearDownARSession() {
         guard isSessionActive else { return }
 
@@ -494,6 +555,7 @@ class ReplateCameraView: UIView, ARSessionDelegate {
 
     private static func resetProperties() {
         anchorEntity = nil
+        anchorLocked = false
         model = nil
         spheresModels.removeAll()
         upperSpheresSet = [Bool](repeating: false, count: 72)
@@ -722,7 +784,15 @@ func resumeSession() {
 
     let configuration = ARWorldTrackingConfiguration()
     configuration.isLightEstimationEnabled = true
-    configuration.planeDetection = .horizontal
+
+    // If an anchor has been placed, keep tracking but stop looking for new planes to avoid
+    // the guide drifting when the reference plane is temporarily lost.
+    if ReplateCameraView.anchorLocked {
+      configuration.planeDetection = []
+      print("[ReplateCameraView] Resuming with planes disabled (anchor locked)")
+    } else {
+      configuration.planeDetection = .horizontal
+    }
 
     ReplateCameraView.arView?.session.run(configuration)
     startDeviceMotionUpdates()
@@ -864,6 +934,8 @@ class ReplateCameraController: NSObject {
 
     // State tracking for backInRange callback
     static var wasOutOfRange = false
+    // Track if an anchor has been placed to lock plane detection immediately
+    static var anchorLocked = false
 
     // MARK: - Callback Registration Methods
     @objc(registerOpenedTutorialCallback:)
@@ -973,6 +1045,13 @@ class ReplateCameraController: NSObject {
         DispatchQueue.main.async {
             ReplateCameraView.tearDownARSession()
         }
+    }
+
+    @objc
+    func destroySession() {
+    DispatchQueue.main.async {
+        ReplateCameraView.destroy()
+    }
     }
 
     @objc(getMemoryUsage:rejecter:)
