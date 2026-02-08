@@ -80,6 +80,8 @@ class ReplateCameraView: UIView, ARSessionDelegate {
   private static var isProcessingTap = false
   private static var lastTapTime: TimeInterval = 0
   private static let tapDebounceInterval: TimeInterval = 0.5
+  /// Keep a reference to the pan recognizer so we can disable movement after anchoring
+  private static var panRecognizer: UIPanGestureRecognizer?
   /// Core Image context for rendering CIImages
   static let ciContext = CIContext()
   /// AR focus indicator
@@ -93,15 +95,31 @@ class ReplateCameraView: UIView, ARSessionDelegate {
 
   // Sphere Properties
   static var spheresModels: [ModelEntity] = []
+  /// Track which ring elements already have an inner cylinder
+  /// Track the sphere currently highlighted (green + scaled)
+  static var lastGreenSphere: ModelEntity?
   static var upperSpheresSet = [Bool](repeating: false, count: 72)
   static var lowerSpheresSet = [Bool](repeating: false, count: 72)
-  static var sphereRadius = Float(0.004)
+  /// Half of the line's width (was sphere radius)
+  static var sphereRadius = Float(0.0015)
+  /// Line height for the marker primitives (vertical length)
+  static var lineHeight = Float(0.02)
+  /// Tangential length of each line segment around the ring (thin width)
+  static var lineLength = Float(0.003)
+  /// Scale applied on Y when a marker turns green
+  static let greenHeightScale: Float = 0.7
+  /// Low‑poly mesh + material reused for every sphere to keep memory down
+  static var sphereMesh: MeshResource?
+  static var sphereMaterial: SimpleMaterial?
   static var spheresRadius = Float(0.13)
   static var sphereAngle = Float(5)
-  static var spheresHeight = Float(0.10)
+  // Raise the bottom circle of spheres
+  static var spheresHeight = Float(0.15)
   static var distanceBetweenCircles = Float(0.10)
   /// Prototype entity for GPU instancing of spheres
   static var spherePrototype: ModelEntity?
+  /// Container holding all sphere instances so we can drop them in one call
+  static var spheresContainer: Entity?
 
   // Focus and Navigation
   static var focusModel: Entity!
@@ -212,16 +230,20 @@ class ReplateCameraView: UIView, ARSessionDelegate {
 
     // MARK: - Gesture Recognition
     static func addRecognizers() {
-        guard let instance = INSTANCE else { return }
+    guard let instance = INSTANCE else { return }
 
-        let recognizers = [
-          UITapGestureRecognizer(target: instance, action: #selector(instance.viewTapped)),
-            UIPanGestureRecognizer(target: instance, action: #selector(instance.handlePan)),
-            UIPinchGestureRecognizer(target: instance, action: #selector(instance.handlePinch))
-        ]
+    let recognizers = [
+      UITapGestureRecognizer(target: instance, action: #selector(instance.viewTapped)),
+        {
+          let pan = UIPanGestureRecognizer(target: instance, action: #selector(instance.handlePan))
+          ReplateCameraView.panRecognizer = pan
+          return pan
+        }(),
+        UIPinchGestureRecognizer(target: instance, action: #selector(instance.handlePinch))
+    ]
 
-        recognizers.forEach { arView.addGestureRecognizer($0) }
-    }
+    recognizers.forEach { arView.addGestureRecognizer($0) }
+  }
 
   @objc func viewTapped(_ recognizer: UITapGestureRecognizer) {
     print("VIEW TAPPED")
@@ -259,15 +281,24 @@ class ReplateCameraView: UIView, ARSessionDelegate {
       return
     }
 
+    // Only place an anchor when the focus entity is tracking a horizontal plane
+    guard isFocusOnHorizontalPlane(focus) else {
+      print("Tap ignored - focus not on horizontal plane")
+      ReplateCameraView.isProcessingTap = false
+      return
+    }
+
     let focusTransform = focus.transformMatrix(relativeTo: nil)
     // Freeze anchoring to the initial world transform so it stays put even if
-    // the detected plane is temporarily lost.
-    let anchor = AnchorEntity(world: focusTransform)
-    var anchoring = AnchoringComponent(.world(transform: focusTransform))
+    // tracking refines or the original plane is lost.
+    let anchor: AnchorEntity
     if #available(iOS 18.0, *) {
-      anchoring.trackingMode = .once
+      // trackingMode .once prevents RealityKit from re-evaluating the anchor pose
+      anchor = AnchorEntity(.world(transform: focusTransform), trackingMode: .once)
+    } else {
+      anchor = AnchorEntity(world: focusTransform)
+      anchor.anchoring = AnchoringComponent(.world(transform: focusTransform))
     }
-    anchor.anchoring = anchoring
     print("ANCHOR FOUND\n", anchor.transform)
 
     // Fire callback
@@ -280,6 +311,8 @@ class ReplateCameraView: UIView, ARSessionDelegate {
     // Set the anchor
     ReplateCameraView.anchorEntity = anchor
     ReplateCameraView.anchorLocked = true
+    // Disable panning so the anchor cannot be moved after placement
+    ReplateCameraView.panRecognizer?.isEnabled = false
     createSpheres(y: ReplateCameraView.spheresHeight)
     createSpheres(y: ReplateCameraView.distanceBetweenCircles + ReplateCameraView.spheresHeight)
     createFocusSphere()
@@ -315,6 +348,8 @@ ReplateCameraView.focusEntity = nil
   }
 
   @objc private func handlePan(_ gestureRecognizer: UIPanGestureRecognizer) {
+    // Once the scan starts (anchor locked), disallow moving the anchor
+    if ReplateCameraView.anchorLocked { return }
     print("handle pan")
     guard let sceneView = gestureRecognizer.view as? ARView else {
       return
@@ -374,41 +409,14 @@ ReplateCameraView.focusEntity = nil
 
   func createFocusSphere() {
     DispatchQueue.main.async {
-      let sphereRadius = ReplateCameraView.sphereRadius * 1.5
-
-      // Generate the first sphere mesh
-      let sphereMesh1 = MeshResource.generateSphere(radius: sphereRadius)
-
-      // Create the first sphere entity with initial material
-      let sphereEntity1 = ModelEntity(mesh: sphereMesh1, materials: [SimpleMaterial(color: .green.withAlphaComponent(1), roughness: 1, isMetallic: false)])
-
-      // Set the position for the first sphere entity
-      sphereEntity1.position = SIMD3(x: 0, y: ReplateCameraView.spheresHeight, z: 0)
-
-      // Generate the second sphere mesh
-      let sphereMesh2 = MeshResource.generateSphere(radius: sphereRadius)
-
-      // Create the second sphere entity with initial material
-      let sphereEntity2 = ModelEntity(mesh: sphereMesh2, materials: [SimpleMaterial(color: .green.withAlphaComponent(1), roughness: 1, isMetallic: false)])
-
-      // Set the position for the second sphere entity
-      sphereEntity2.position = SIMD3(x: 0, y: ReplateCameraView.spheresHeight + ReplateCameraView.distanceBetweenCircles, z: 0)
-
-
-      // Update the material of the sphere entities
-      sphereEntity1.model?.materials = [SimpleMaterial(color: .green.withAlphaComponent(1), roughness: 1, isMetallic: false)]
-      sphereEntity2.model?.materials = [SimpleMaterial(color: .green.withAlphaComponent(1), roughness: 1, isMetallic: false)]
-
       let baseOverlayEntity = self.loadModel(named: "center.obj")
       baseOverlayEntity.scale *= 12
       baseOverlayEntity.model?.materials = [SimpleMaterial(color: .white.withAlphaComponent(0.3), roughness: 1, isMetallic: false),
                                             SimpleMaterial(color: .white.withAlphaComponent(0.7), roughness: 1, isMetallic: false),
                                             SimpleMaterial(color: .white.withAlphaComponent(0.5), roughness: 1, isMetallic: false)]
 
-      // Create a parent entity to hold both spheres
+      // Create a parent entity to hold the overlay (central spheres removed)
       let parentEntity = Entity()
-      parentEntity.addChild(sphereEntity1)
-      parentEntity.addChild(sphereEntity2)
       parentEntity.addChild(baseOverlayEntity)
 
       // Set the focus model for the global state
@@ -422,13 +430,39 @@ ReplateCameraView.focusEntity = nil
     func createSpheres(y: Float) {
         DispatchQueue.main.async {
             guard let anchor = ReplateCameraView.anchorEntity else { return }
-            // Lazily initialize a single prototype for instancing
-            if ReplateCameraView.spherePrototype == nil {
-                let mesh = MeshResource.generateSphere(radius: ReplateCameraView.sphereRadius)
-                let material = SimpleMaterial(color: .white.withAlphaComponent(1), roughness: 1, isMetallic: false)
-                ReplateCameraView.spherePrototype = ModelEntity(mesh: mesh, materials: [material])
+            // Lazily initialize a single shared prototype for instancing
+            if ReplateCameraView.sphereMesh == nil {
+                let thickness = ReplateCameraView.sphereRadius * 2
+                ReplateCameraView.sphereMesh = MeshResource.generateBox(
+                    size: [ReplateCameraView.lineLength, ReplateCameraView.lineHeight, thickness],
+                    cornerRadius: 0
+                )
+            }
+            if ReplateCameraView.sphereMaterial == nil {
+                ReplateCameraView.sphereMaterial = SimpleMaterial(color: .white.withAlphaComponent(1),
+                                                                  roughness: 1,
+                                                                  isMetallic: false)
+            }
+            if ReplateCameraView.spherePrototype == nil,
+               let mesh = ReplateCameraView.sphereMesh,
+               let material = ReplateCameraView.sphereMaterial {
+                let prototype = ModelEntity(mesh: mesh, materials: [material])
+                let thickness = ReplateCameraView.sphereRadius * 2
+                // Explicit collision shape keeps RealityKit from generating per‑instance geometry
+                prototype.collision = CollisionComponent(
+                    shapes: [ShapeResource.generateBox(size: [ReplateCameraView.lineLength, ReplateCameraView.lineHeight, thickness])]
+                )
+                ReplateCameraView.spherePrototype = prototype
             }
             guard let prototype = ReplateCameraView.spherePrototype else { return }
+
+            // Create (or reuse) a single container so we can remove all spheres quickly
+            if ReplateCameraView.spheresContainer == nil {
+                ReplateCameraView.spheresContainer = Entity()
+                anchor.addChild(ReplateCameraView.spheresContainer!)
+            }
+            guard let container = ReplateCameraView.spheresContainer else { return }
+
             let radius = ReplateCameraView.spheresRadius
             for i in 0..<72 {
                 let angle = Float(i) * (Float.pi / 180) * 5
@@ -440,18 +474,26 @@ ReplateCameraView.focusEntity = nil
                 // Clone the prototype instead of regenerating mesh/material
                 let sphereInstance = prototype.clone(recursive: false)
                 sphereInstance.position = position
+                // Orient each line tangentially around the ring
+                sphereInstance.orientation = simd_quatf(angle: angle + Float.pi / 2, axis: SIMD3<Float>(0, 1, 0))
                 ReplateCameraView.spheresModels.append(sphereInstance)
-                anchor.addChild(sphereInstance)
+                container.addChild(sphereInstance)
             }
         }
     }
 
     func createSphere(position: SIMD3<Float>) -> ModelEntity {
-        let sphereMesh = MeshResource.generateSphere(radius: ReplateCameraView.sphereRadius)
+        let thickness = ReplateCameraView.sphereRadius * 2
+        let mesh = MeshResource.generateBox(
+            size: [ReplateCameraView.lineLength, ReplateCameraView.lineHeight, thickness],
+            cornerRadius: 0
+        )
         let material = SimpleMaterial(color: .white.withAlphaComponent(1), roughness: 1, isMetallic: false)
-        let sphere = ModelEntity(mesh: sphereMesh, materials: [material])
-        sphere.position = position
-        return sphere
+        let line = ModelEntity(mesh: mesh, materials: [material])
+        line.collision = CollisionComponent(shapes: [ShapeResource.generateBox(size: [ReplateCameraView.lineLength, ReplateCameraView.lineHeight, thickness])])
+        line.position = position
+        line.orientation = simd_quatf(angle: atan2(position.z, position.x) + Float.pi / 2, axis: SIMD3<Float>(0, 1, 0))
+        return line
     }
 
 
@@ -531,6 +573,8 @@ ReplateCameraView.focusEntity = nil
     static func tearDownARSession() {
         guard isSessionActive else { return }
 
+        clearSpheres()
+
         arView?.session.pause()
         arView?.session.delegate = nil
         arView?.scene.anchors.removeAll()
@@ -554,21 +598,26 @@ ReplateCameraView.focusEntity = nil
     }
 
     private static func resetProperties() {
+        clearSpheres()
         anchorEntity = nil
         anchorLocked = false
         model = nil
-        spheresModels.removeAll()
         upperSpheresSet = [Bool](repeating: false, count: 72)
         lowerSpheresSet = [Bool](repeating: false, count: 72)
         totalPhotosTaken = 0
         photosFromDifferentAnglesTaken = 0
-        sphereRadius = 0.004
+        sphereRadius = 0.0015
+        lineHeight = 0.02
+        lineLength = 0.003
         spheresRadius = 0.13
         sphereAngle = 5
-        spheresHeight = 0.10
+        spheresHeight = 0.15
         dragSpeed = 7000
         gravityVector = [:]
         ReplateCameraView.spherePrototype = nil
+        sphereMesh = nil
+        sphereMaterial = nil
+        lastGreenSphere = nil
         ReplateCameraController.wasOutOfRange = false
 
         // Reset tap handling state
@@ -580,6 +629,16 @@ ReplateCameraView.focusEntity = nil
 
         // Clean up temporary files to free disk space
         cleanupTemporaryFiles()
+    }
+
+    /// Drop all sphere instances and release shared resources to free memory.
+    private static func clearSpheres() {
+        spheresContainer?.removeFromParent()
+        spheresContainer = nil
+        spheresModels.removeAll()
+        spherePrototype = nil
+        sphereMesh = nil
+        sphereMaterial = nil
     }
 
     private static func cleanupTemporaryFiles() {
@@ -678,8 +737,56 @@ ReplateCameraView.focusEntity = nil
   }
 
   func session(_ session: ARSession, didUpdate frame: ARFrame) {
-    // Handle AR frame updates
-    // You can perform actions here, such as updating the AR content based on the camera frame
+    // Feature removed: keep spheres static when looking at them.
+  }
+
+  /// Cast a ray from the center of the screen and highlight the ring circle under the gaze.
+  private func insertInnerCylinderIfCentered() {
+    // Disabled; left in place for potential future reuse.
+    return
+    guard let view = ReplateCameraView.arView else { return }
+
+    let centerPoint = CGPoint(x: view.bounds.midX, y: view.bounds.midY)
+    guard let hitEntity = view.entity(at: centerPoint) else {
+      resetHighlightedSphere()
+      return
+    }
+
+    // The hit entity may be the circle itself or one of its children.
+    // Walk up the hierarchy until we find a registered circle (ring element).
+    var current: Entity? = hitEntity
+    while let entity = current {
+      if let model = entity as? ModelEntity,
+         ReplateCameraView.spheresModels.contains(where: { $0 === model }) {
+
+        highlightSphere(model)
+        return
+      }
+      current = entity.parent
+    }
+    // If we exited the loop without a match, clear highlight
+    resetHighlightedSphere()
+  }
+
+  private func highlightSphere(_ sphere: ModelEntity) {
+    // If already highlighted, do nothing
+    if ReplateCameraView.lastGreenSphere === sphere { return }
+
+    // Reset previous highlight
+    resetHighlightedSphere()
+
+    // Tint green and reduce height by 30%
+    sphere.scale = SIMD3<Float>(x: 1.0, y: ReplateCameraView.greenHeightScale, z: 1.0)
+    sphere.model?.materials = [SimpleMaterial(color: .green, roughness: 1, isMetallic: false)]
+    ReplateCameraView.lastGreenSphere = sphere
+  }
+
+  private func resetHighlightedSphere() {
+    if let last = ReplateCameraView.lastGreenSphere {
+      last.scale = SIMD3<Float>(repeating: 1.0)
+      last.model?.materials = [SimpleMaterial(color: .white.withAlphaComponent(1), roughness: 1, isMetallic: false)]
+      ReplateCameraView.lastGreenSphere = nil
+    }
   }
 
   func sessionWasInterrupted(_ session: ARSession) {
@@ -798,6 +905,26 @@ func resumeSession() {
     startDeviceMotionUpdates()
     ReplateCameraView.isSessionActive = true
     print("[ReplateCameraView] AR session resumed")
+  }
+
+  /// Returns true when the focus entity is locked onto a horizontal plane.
+  private func isFocusOnHorizontalPlane(_ focus: FocusEntity) -> Bool {
+    guard focus.onPlane else { return false }
+
+    if let planeAnchor = focus.currentPlaneAnchor {
+      return planeAnchor.alignment == .horizontal
+    }
+
+    #if canImport(ARKit)
+    if case .tracking(let raycastResult, _) = focus.state {
+      if let planeAnchor = raycastResult.anchor as? ARPlaneAnchor {
+        return planeAnchor.alignment == .horizontal
+      }
+      return raycastResult.targetAlignment == .horizontal
+    }
+    #endif
+
+    return false
   }
 
   private func cleanupAppStateObservers() {
@@ -1467,6 +1594,7 @@ class ReplateCameraController: NSObject {
         if let mesh = mesh {
             let material = SimpleMaterial(color: .green, roughness: 1, isMetallic: false)
             mesh.model?.materials[0] = material
+            mesh.scale = SIMD3<Float>(x: 1.0, y: ReplateCameraView.greenHeightScale, z: 1.0)
           ReplateCameraView.INSTANCE.generateImpactFeedback(strength: .light)
         }
 

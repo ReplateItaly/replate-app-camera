@@ -34,6 +34,7 @@ import com.google.ar.core.Plane
 import com.google.ar.core.TrackingState
 import com.google.ar.sceneform.*
 import com.google.ar.sceneform.math.Vector3
+import com.google.ar.sceneform.math.Quaternion
 import com.google.ar.sceneform.rendering.Color
 import com.google.ar.sceneform.rendering.Material
 import com.google.ar.sceneform.rendering.MaterialFactory
@@ -84,7 +85,10 @@ class ReplateCameraView @JvmOverloads constructor(
     private const val ANGLE_INCREMENT_DEGREES = 5f
 
     // Initial defaults that match the Swift code
-    private const val DEFAULT_SPHERE_RADIUS = 0.004f
+    private const val DEFAULT_SPHERE_RADIUS = 0.0015f
+    private const val DEFAULT_LINE_HEIGHT = 0.02f   // vertical length
+    private const val DEFAULT_LINE_LENGTH = 0.003f  // thin width
+    private const val GREEN_HEIGHT_SCALE = 0.7f
     private const val DEFAULT_SPHERES_RADIUS = 0.13f
     private const val DEFAULT_SPHERES_HEIGHT = 0.10f
     private const val DEFAULT_DISTANCE_BETWEEN_CIRCLES = 0.10f
@@ -124,6 +128,8 @@ class ReplateCameraView @JvmOverloads constructor(
 
   // Scene geometry
   private var sphereRadius = DEFAULT_SPHERE_RADIUS
+  private var lineHeight = DEFAULT_LINE_HEIGHT
+  private var lineLength = DEFAULT_LINE_LENGTH
   private var spheresRadius = DEFAULT_SPHERES_RADIUS
   private var sphereAngle = ANGLE_INCREMENT_DEGREES  // If you want to “scale angle”
   private var spheresHeight = DEFAULT_SPHERES_HEIGHT
@@ -270,12 +276,19 @@ class ReplateCameraView @JvmOverloads constructor(
   private fun createSphere(position: Vector3) {
     MaterialFactory.makeOpaqueWithColor(context, Color(android.graphics.Color.WHITE))
       .thenAccept { material: Material ->
-        val sphereRenderable = ShapeFactory.makeSphere(sphereRadius, Vector3.zero(), material)
-        val sphereNode = TransformableNode(arFragment.transformationSystem)
-        sphereNode.renderable = sphereRenderable
-        sphereNode.worldPosition = position
-        sphereNode.setParent(anchorNode)
-        spheresModels.add(sphereNode)
+        val center = Vector3.zero()
+        val thickness = sphereRadius * 2
+        // ShapeFactory.makeCube already produces a 6-face box; keep zero corner radius for the flattest look.
+        val lineRenderable = ShapeFactory.makeCube(Vector3(lineLength, lineHeight, thickness), center, material)
+        val lineNode = TransformableNode(arFragment.transformationSystem)
+        lineNode.renderable = lineRenderable
+        lineNode.worldPosition = position
+        // Orient tangentially around the ring
+        val angleRad = Math.atan2(position.z.toDouble(), position.x.toDouble())
+        val angleDeg = Math.toDegrees(angleRad).toFloat() + 90f
+        lineNode.localRotation = Quaternion.axisAngle(Vector3(0f, 1f, 0f), angleDeg)
+        lineNode.setParent(anchorNode)
+        spheresModels.add(lineNode)
       }
   }
 
@@ -510,6 +523,7 @@ class ReplateCameraView @JvmOverloads constructor(
         val material = node.renderable?.material?.makeCopy()
         material?.setFloat4("color", color)
         node.renderable?.material = material
+        node.localScale = Vector3(1f, GREEN_HEIGHT_SCALE, 1f)
     }
   }
 
@@ -790,6 +804,8 @@ class ReplateCameraView @JvmOverloads constructor(
 
       // Reset geometry
       sphereRadius = DEFAULT_SPHERE_RADIUS
+      lineHeight = DEFAULT_LINE_HEIGHT
+      lineLength = DEFAULT_LINE_LENGTH
       spheresRadius = DEFAULT_SPHERES_RADIUS
       sphereAngle = ANGLE_INCREMENT_DEGREES
       spheresHeight = DEFAULT_SPHERES_HEIGHT
