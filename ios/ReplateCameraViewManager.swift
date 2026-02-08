@@ -188,6 +188,27 @@ class ReplateCameraView: UIView, ARSessionDelegate {
         }
     }
 
+    /// Stop all plane tracking and purge any previously detected plane anchors so
+    /// the placed guide stays at its initial world transform (i.e. "floating" in space).
+    private static func disablePlanesAndClearAnchors() {
+        guard let session = arView?.session else { return }
+
+        let config = ARWorldTrackingConfiguration()
+        config.isLightEstimationEnabled = true
+        config.planeDetection = []
+
+        // Run without reset options so existing world anchors stay exactly where they were placed.
+        session.run(config, options: [])
+
+        // Remove any plane anchors that were already detected; they are no longer needed
+        // and could otherwise continue to update.
+        if let anchors = session.currentFrame?.anchors {
+            anchors.compactMap({ $0 as? ARPlaneAnchor }).forEach { plane in
+                session.remove(anchor: plane)
+            }
+        }
+    }
+
     private static func configureARView(_ configuration: ARWorldTrackingConfiguration) {
         configureRenderOptions()
         configureVideoFormat(configuration)
@@ -323,18 +344,7 @@ class ReplateCameraView: UIView, ARSessionDelegate {
     ReplateCameraView.arView.scene.anchors.append(anchorEntity)
 
     // --- STOP plane detection after placement ---
-
-let newConfig = ARWorldTrackingConfiguration()
-newConfig.isLightEstimationEnabled = true
-
-// IMPORTANT: disable planes
-newConfig.planeDetection = []
-
-// Keep world tracking WITHOUT resetting anchor
-ReplateCameraView.arView.session.run(
-    newConfig,
-    options: [] // keep existing anchors so the guide stays locked in world space
-)
+    Self.disablePlanesAndClearAnchors()
 
 
     // Hide the focus reticle once an anchor is set
@@ -879,7 +889,7 @@ func pauseSession() {
     print("[ReplateCameraView] AR session paused")
   }
 
-func resumeSession() {
+  func resumeSession() {
     guard !ReplateCameraView.isSessionActive && !ReplateCameraView.isResetting else { return }
     guard ReplateCameraView.arView != nil else { return }
     
@@ -889,19 +899,17 @@ func resumeSession() {
       return
     }
 
-    let configuration = ARWorldTrackingConfiguration()
-    configuration.isLightEstimationEnabled = true
-
-    // If an anchor has been placed, keep tracking but stop looking for new planes to avoid
-    // the guide drifting when the reference plane is temporarily lost.
+    // If we already placed the anchor, keep the guide floating by fully
+    // disabling plane tracking and removing any cached plane anchors.
     if ReplateCameraView.anchorLocked {
-      configuration.planeDetection = []
+      Self.disablePlanesAndClearAnchors()
       print("[ReplateCameraView] Resuming with planes disabled (anchor locked)")
     } else {
+      let configuration = ARWorldTrackingConfiguration()
+      configuration.isLightEstimationEnabled = true
       configuration.planeDetection = .horizontal
+      ReplateCameraView.arView?.session.run(configuration)
     }
-
-    ReplateCameraView.arView?.session.run(configuration)
     startDeviceMotionUpdates()
     ReplateCameraView.isSessionActive = true
     print("[ReplateCameraView] AR session resumed")
