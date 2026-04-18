@@ -3,7 +3,9 @@
     "allow": [
       "Bash(./gradlew app:assembleDebug --rerun-tasks)",
       "Bash(/Users/luca/Library/Android/sdk/platform-tools/adb install *)",
-      "Bash(/Users/luca/Library/Android/sdk/platform-tools/adb shell *)"
+      "Bash(/Users/luca/Library/Android/sdk/platform-tools/adb shell *)",
+      "Bash(npx prettier *)",
+      "Bash(npx eslint *)"
     ]
   }
 }
