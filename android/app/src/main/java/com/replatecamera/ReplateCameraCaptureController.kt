@@ -119,7 +119,11 @@ class ReplateCameraCaptureController(
                         try {
                             val uri = Uri.fromFile(file)
                             saveExif(uri, json)
-                            logI("SAVED: auto-capture JPEG uri=$uri totalAngles=${ReplateCameraView.photosFromDifferentAnglesTaken}")
+                            val totalAngles = ReplateCameraView.photosFromDifferentAnglesTaken
+                            logI("SAVED: auto-capture JPEG uri=$uri totalAngles=$totalAngles")
+                            Handler(Looper.getMainLooper()).post {
+                                cameraView.sendPhotoTakenEvent(totalAngles)
+                            }
                         } catch (e: Exception) {
                             logE("Auto-capture EXIF/save error", e)
                         } finally {

@@ -86,6 +86,12 @@ export function registerBackInRangeCallback(callback: () => void) {
   ReplateCameraModule.registerBackInRangeCallback(callback);
 }
 
+export function registerPhotoTakenCallback(
+  callback: (totalAngles: number) => void
+) {
+  ReplateCameraModule.registerPhotoTakenCallback(callback);
+}
+
 export function getMemoryUsage(): Promise<{ memoryUsageMB: number }> {
   return ReplateCameraModule.getMemoryUsage();
 }

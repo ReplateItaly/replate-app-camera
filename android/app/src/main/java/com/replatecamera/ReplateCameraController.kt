@@ -25,6 +25,7 @@ class ReplateCameraController(private val reactContext: ReactApplicationContext)
     private var tooCloseCallback: Callback? = null
     private var tooFarCallback: Callback? = null
     private var backInRangeCallback: Callback? = null
+    private var photoTakenCallback: Callback? = null
 
     @Synchronized
     fun consumeCompletedTutorialCallback(): Callback? {
@@ -79,6 +80,13 @@ class ReplateCameraController(private val reactContext: ReactApplicationContext)
     fun consumeBackInRangeCallback(): Callback? {
       val callback = backInRangeCallback
       backInRangeCallback = null
+      return callback
+    }
+
+    @Synchronized
+    fun consumePhotoTakenCallback(): Callback? {
+      val callback = photoTakenCallback
+      photoTakenCallback = null
       return callback
     }
   }
@@ -146,6 +154,14 @@ class ReplateCameraController(private val reactContext: ReactApplicationContext)
     Log.d(TAG, "registerBackInRangeCallback")
     synchronized(lock) {
       backInRangeCallback = callback
+    }
+  }
+
+  @ReactMethod
+  fun registerPhotoTakenCallback(callback: Callback) {
+    Log.d(TAG, "registerPhotoTakenCallback")
+    synchronized(lock) {
+      photoTakenCallback = callback
     }
   }
 

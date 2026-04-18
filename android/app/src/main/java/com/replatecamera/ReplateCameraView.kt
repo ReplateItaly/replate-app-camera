@@ -122,6 +122,7 @@ class ReplateCameraView @JvmOverloads constructor(
   private var anchorNode: AnchorNode? = null
   private var anchorContentNode: Node? = null
   private var isSessionPaused = true
+  @Volatile var captureActive = false
   private var isViewAttached = false
   private var sensorManager: android.hardware.SensorManager? = null
   private var gravitySensor: android.hardware.Sensor? = null
@@ -797,8 +798,9 @@ class ReplateCameraView @JvmOverloads constructor(
       }
     } else {
       focusNode?.isEnabled = false
-      // Auto-capture: fire when the camera faces a new sphere angle
-      cameraController?.triggerAutoCaptureIfNewAngle(frame)
+      if (captureActive) {
+        cameraController?.triggerAutoCaptureIfNewAngle(frame)
+      }
     }
 
     frameCounter++
@@ -1290,6 +1292,11 @@ class ReplateCameraView @JvmOverloads constructor(
     }
   }
 
+  fun sendPhotoTakenEvent(totalAngles: Int) {
+    logD("Sending JS event=onPhotoTaken totalAngles=$totalAngles")
+    ReplateCameraController.consumePhotoTakenCallback()?.invoke(totalAngles)
+  }
+
   fun updateSpheres(deviceTargetInfo: DeviceTargetInfo, camera: com.google.ar.core.Camera, callback: (Boolean) -> Unit) {
     val angleDegrees = angleBetweenAnchorXAndCamera(getTransformRootNode() ?: return, camera.pose)
     val sphereIndex = (round(angleDegrees / 5.0f) % 72).toInt()
@@ -1548,7 +1555,8 @@ class ReplateCameraView @JvmOverloads constructor(
       unregisterSensorListener()
       
       isSessionPaused = true
-      logI("AR session paused")
+      captureActive = false
+      logI("AR session paused captureActive=false")
     } catch (e: Exception) {
       logE("Error pausing AR session", e)
     }
@@ -1613,8 +1621,9 @@ class ReplateCameraView @JvmOverloads constructor(
       sceneView.scene.addOnUpdateListener(this)
 
       isSessionPaused = false
+      captureActive = true
       expectingFirstFrame = true
-      logI("RESUME [success] isSessionPaused=false")
+      logI("RESUME [success] isSessionPaused=false captureActive=true")
     } catch (e: CameraNotAvailableException) {
       // If the anchor is already placed, don't close the session — that would lose
       // all node positions. Just wait and retry; tracking will resume when the camera
@@ -1766,6 +1775,7 @@ class ReplateCameraView @JvmOverloads constructor(
       planeTrackingEnabled = true
       anchorDetachedForDrag = false
       anchorDragInProgress = false
+      captureActive = false
       selectedCameraSessionHash = null
       gestureRoutingInstalled = false
 
