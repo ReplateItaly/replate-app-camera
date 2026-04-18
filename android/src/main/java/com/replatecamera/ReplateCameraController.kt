@@ -107,41 +107,20 @@ class ReplateCameraController(
             try {
                 validateAndProcessPhoto(unlimited, promise)
             } catch (e: Exception) {
-                // Handle unexpected errors
-                SafeCallbackHandler(promise).reject(ARError.Unknown)
+                Log.e(TAG, "takePhoto unexpected error", e)
             }
         }
     }
 
     private fun validateAndProcessPhoto(unlimited: Boolean, promise: Promise) {
-        val callback = SafeCallbackHandler(promise)
-
-        // 1. Get a valid anchor
-        val anchorNode = cameraView.getAnchorNode()
-        if (anchorNode == null) {
-            callback.reject(ARError.NoAnchor)
-            return
-        }
-        if (!isAnchorNodeValid(anchorNode)) {
-            callback.reject(ARError.InvalidAnchor)
-            return
-        }
-
-        // 2. Get device target info
-        val frame = arSceneView.arFrame
-        if (frame == null) {
-            callback.reject(ARError.TransformError)
-            return
-        }
-
+        val anchorNode = cameraView.getAnchorNode() ?: return
+        if (!isAnchorNodeValid(anchorNode)) return
+        val frame = arSceneView.arFrame ?: return
         val deviceTargetInfo = getDeviceTargetInfo(anchorNode, frame)
-        if (!deviceTargetInfo.isInFocus) {
-            callback.reject(ARError.NotInFocus)
-            return
-        }
+        if (!deviceTargetInfo.isInFocus) return
 
-        // 3. Process the target
-        processTargetedDevice(deviceTargetInfo, unlimited, callback)
+        // All guards passed — only now create the callback that owns the promise
+        processTargetedDevice(deviceTargetInfo, unlimited, SafeCallbackHandler(promise))
     }
 
     private fun processTargetedDevice(
@@ -152,28 +131,16 @@ class ReplateCameraController(
         val frame = arSceneView.arFrame ?: return
 
         // Check lighting
-        if (frame.lightEstimate.pixelIntensity < MIN_AMBIENT_INTENSITY) {
-            callback.reject(ARError.LightingError)
-            return
-        }
+        if (frame.lightEstimate.pixelIntensity < MIN_AMBIENT_INTENSITY) return
 
         // Run UI updates on the main thread
         Handler(Looper.getMainLooper()).post {
-            // Update UI focus circle
-            cameraView.updateCircleFocus(deviceTargetInfo.targetIndex)
-
             // Check distance
-            if (!cameraView.checkCameraDistance(deviceTargetInfo)) {
-                callback.reject(ARError.NotInRange)
-                return@post
-            }
+            if (!cameraView.checkCameraDistance(deviceTargetInfo)) return@post
 
             // Update spheres and get result
             cameraView.updateSpheres(deviceTargetInfo, frame.camera) { success ->
-                if (!unlimited && !success) {
-                    callback.reject(ARError.TooManyImages)
-                    return@updateSpheres
-                }
+                if (!unlimited && !success) return@updateSpheres
 
                 // Capture image on background thread
                 arQueue.execute {
@@ -193,6 +160,7 @@ class ReplateCameraController(
                     val uri = Uri.fromFile(photoFile)
                     val json = getTransformJSON(frame, cameraView.getAnchorNode()!!)
                     saveExif(uri, json)
+                    Log.d(TAG, "Gravity vector at shot => ${cameraView.getGravityVector()}")
                     callback.resolve(uri.toString())
                 } catch (e: Exception) {
                     Log.e(TAG, "Error processing or saving image", e)
@@ -237,7 +205,9 @@ class ReplateCameraController(
         val angleToAnchor = Vector3.dot(cameraDirection, directionToAnchor)
 
         val isInFocus = angleToAnchor < ANGLE_THRESHOLD
-        val targetIndex = if (cameraPosition.y < anchorPosition.y + 0.10f) 0 else 1
+        val relativeY = cameraPosition.y - anchorPosition.y
+        val threshold = 0.10f + 0.10f + 0.10f / 5f // spheresHeight + distanceBetweenCircles + distanceBetweenCircles/5
+        val targetIndex = if (relativeY < threshold) 0 else 1
 
         return DeviceTargetInfo(
             isInFocus = isInFocus,

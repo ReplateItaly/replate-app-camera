@@ -15,9 +15,9 @@ class FocusNode(context: Context, private val arFragment: com.google.ar.scenefor
     private val focusIndicator: Node = Node()
 
     init {
-        MaterialFactory.makeOpaqueWithColor(context, Color(1f, 1f, 1f, 0.5f))
+        MaterialFactory.makeOpaqueWithColor(context, Color(1f, 1f, 1f))
             .thenAccept { material ->
-                val renderable = ShapeFactory.makeCylinder(0.1f, 0.01f, Vector3.zero(), material)
+                val renderable = ShapeFactory.makeCylinder(0.12f, 0.01f, Vector3.zero(), material)
                 focusIndicator.renderable = renderable
             }
         addChild(focusIndicator)

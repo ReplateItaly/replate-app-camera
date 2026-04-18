@@ -129,6 +129,10 @@ class ReplateCameraView @JvmOverloads constructor(
   // Spheres and a "focus node" — fixed-size array so index i always = sphere at angle i*5°
   // (lower circle 0..71, upper circle 72..143). Using array avoids async insertion ordering.
   private val spheresModels = arrayOfNulls<Node>(TOTAL_SPHERES_PER_CIRCLE * 2)
+  // Per-sphere material copies — pre-cloned from baseMaterial so setFloat4 updates are sync/instant
+  private val sphereMaterialInstances = arrayOfNulls<Material>(TOTAL_SPHERES_PER_CIRCLE * 2)
+  // Single compiled Material, cloned for each sphere via makeCopy() — avoids 144× shader compiles
+  private var baseMaterial: Material? = null
   private var focusNode: FocusNode? = null
 
   // Scene geometry
@@ -499,23 +503,22 @@ class ReplateCameraView @JvmOverloads constructor(
           }
           anchorNode = createdAnchorNode
           anchorLocked = true
-          circleInFocus = -1 // Force first updateCircleFocus to always apply
+          circleInFocus = -1
           performPhotoTakenHaptic()
-          createSpheresAtY(spheresHeight, 0) // Lower circle: indices 0-71
-          createSpheresAtY(distanceBetweenCircles + spheresHeight, TOTAL_SPHERES_PER_CIRCLE) // Upper: 72-143
-          // Sphere nodes are created async; wait for them to exist before applying initial opacity
-          postDelayed({
-            if (anchorNode != null) {
-              setOpacityToCircle(0, 0.5f)
-              setOpacityToCircle(1, 0.5f)
-            }
-          }, 500)
           sendEvent("onAnchorSet")
           setTorch(true)
           setPlaneTrackingEnabled(false, sceneView)
           sendEvent("onCompletedTutorial")
           focusNode?.isEnabled = false
           logI("Anchor created and tutorial completed")
+          // Pre-build one base material (one shader compile), then clone it per sphere — all sync
+          prebuildBaseMaterial { baseMat ->
+            createSpheresAtY(spheresHeight, 0, baseMat)           // Lower: indices 0-71
+            createSpheresAtY(distanceBetweenCircles + spheresHeight, TOTAL_SPHERES_PER_CIRCLE, baseMat) // Upper: 72-143
+            setOpacityToCircle(0, 1.0f) // Lower circle active
+            setOpacityToCircle(1, 0.5f) // Upper circle dim
+            circleInFocus = 0
+          }
         } else {
           logD("Plane tap ignored (anchorAlreadySet=${anchorNode != null}, debounceMs=${now - lastTapTime}, planeType=${plane.type})")
         }
@@ -842,34 +845,48 @@ class ReplateCameraView @JvmOverloads constructor(
   // ------------------------------------------------------------------------
   // Spheres Logic
   // ------------------------------------------------------------------------
-  @RequiresApi(Build.VERSION_CODES.N)
-  private fun createSpheresAtY(y: Float, circleOffset: Int) {
-    for (i in 0 until TOTAL_SPHERES_PER_CIRCLE) {
-      val angleRad = Math.toRadians((i * ANGLE_INCREMENT_DEGREES).toDouble()).toFloat()
-      val x = spheresRadius * cos(angleRad.toDouble()).toFloat()
-      val z = spheresRadius * sin(angleRad.toDouble()).toFloat()
-      createSphere(Vector3(x, y, z), circleOffset + i)
+
+  /**
+   * Pre-build one base Material from the .filamat asset (one async shader compile).
+   * Subsequent calls return the cached instance immediately.
+   */
+  private fun prebuildBaseMaterial(onReady: (Material) -> Unit) {
+    val cached = baseMaterial
+    if (cached != null) {
+      onReady(cached)
+      return
+    }
+    makeUnlitMaterial(Color(0.98f, 0.98f, 0.98f), 1f) { material ->
+      baseMaterial = material
+      onReady(material)
     }
   }
 
   @RequiresApi(Build.VERSION_CODES.N)
-  private fun createSphere(position: Vector3, arrayIndex: Int) {
-    val white = Color(0.98f, 0.98f, 0.98f, 1f)
-    makeUnlitMaterial(white, 1f) { material ->
-      val center = Vector3.zero()
-      val thickness = sphereRadius * 2
-      val lineRenderable = ShapeFactory.makeCube(Vector3(lineLength, lineHeight, thickness), center, material)
-      val lineNode = Node()
-      lineNode.renderable = lineRenderable
-      lineNode.localPosition = position
-      // Orient tangentially around the ring
-      val angleRad = Math.atan2(position.z.toDouble(), position.x.toDouble())
-      val angleDeg = Math.toDegrees(angleRad).toFloat() + 90f
-      lineNode.localRotation = Quaternion.axisAngle(Vector3(0f, 1f, 0f), angleDeg)
-      lineNode.setParent(anchorContentNode ?: anchorNode ?: return@makeUnlitMaterial)
-      // Store at fixed index so spheresModels[i] is always the sphere at angle i*5°
-      spheresModels[arrayIndex] = lineNode
+  private fun createSpheresAtY(y: Float, circleOffset: Int, baseMat: Material) {
+    for (i in 0 until TOTAL_SPHERES_PER_CIRCLE) {
+      val angleRad = Math.toRadians((i * ANGLE_INCREMENT_DEGREES).toDouble()).toFloat()
+      val x = spheresRadius * cos(angleRad.toDouble()).toFloat()
+      val z = spheresRadius * sin(angleRad.toDouble()).toFloat()
+      createSphere(Vector3(x, y, z), circleOffset + i, baseMat)
     }
+  }
+
+  @RequiresApi(Build.VERSION_CODES.N)
+  private fun createSphere(position: Vector3, arrayIndex: Int, baseMat: Material) {
+    // makeCopy() clones the compiled material instance — synchronous, no shader recompile
+    val copy = baseMat.makeCopy()
+    sphereMaterialInstances[arrayIndex] = copy
+    val thickness = sphereRadius * 2
+    val lineRenderable = ShapeFactory.makeCube(Vector3(lineLength, lineHeight, thickness), Vector3.zero(), copy)
+    val lineNode = Node()
+    lineNode.renderable = lineRenderable
+    lineNode.localPosition = position
+    val angleRad = Math.atan2(position.z.toDouble(), position.x.toDouble())
+    val angleDeg = Math.toDegrees(angleRad).toFloat() + 90f
+    lineNode.localRotation = Quaternion.axisAngle(Vector3(0f, 1f, 0f), angleDeg)
+    lineNode.setParent(anchorContentNode ?: anchorNode ?: return)
+    spheresModels[arrayIndex] = lineNode
   }
 
   fun getAnchorPose(anchor: Node? = getTransformRootNode()): Pose? {
@@ -1221,16 +1238,18 @@ class ReplateCameraView @JvmOverloads constructor(
   private fun setOpacityToCircle(circleId: Int, opacity: Float) {
     val start = if (circleId == 0) 0 else TOTAL_SPHERES_PER_CIRCLE
     val end = start + TOTAL_SPHERES_PER_CIRCLE
-    val white = Color(0.98f, 0.98f, 0.98f, 1f)
-    val green = Color(0f, 1f, 0f, 1f)
+    val dim = opacity < 0.9f
     for (i in start until end) {
+      val mat = sphereMaterialInstances[i] ?: continue
       val localIndex = i - start
       val captured = if (circleId == 0) lowerSpheresSet[localIndex] else upperSpheresSet[localIndex]
-      val color = if (captured) green else white
-
-      val node = spheresModels[i] ?: continue
-      makeUnlitMaterial(color, opacity) { material ->
-        node.renderable?.material = material
+      // Direct setFloat4 on cached MaterialInstance — no shader compile, pure JNI param update
+      if (captured) {
+        if (dim) trySet { mat.setFloat4("baseColor", 0f, 0.5f, 0f, 1f) }
+        else trySet { mat.setFloat4("baseColor", 0f, 1f, 0f, 1f) }
+      } else {
+        if (dim) trySet { mat.setFloat4("baseColor", 0.49f, 0.49f, 0.49f, 1f) }
+        else trySet { mat.setFloat4("baseColor", 0.98f, 0.98f, 0.98f, 1f) }
       }
     }
   }
@@ -1330,14 +1349,17 @@ class ReplateCameraView @JvmOverloads constructor(
   private fun updateSphereColor(index: Int, color: Color, retryCount: Int = 0) {
     val node = spheresModels.getOrNull(index)
     if (node == null) {
-      // Node not yet created (async material callback pending). Retry up to 10 times.
-      if (retryCount < 10) {
-        postDelayed({ updateSphereColor(index, color, retryCount + 1) }, 150)
-      }
+      if (retryCount < 10) postDelayed({ updateSphereColor(index, color, retryCount + 1) }, 150)
       return
     }
-    makeUnlitMaterial(color, 1f) { material ->
-      node.renderable?.material = material
+    val mat = sphereMaterialInstances[index]
+    if (mat != null) {
+      val circleId = if (index < TOTAL_SPHERES_PER_CIRCLE) 0 else 1
+      val isActive = circleInFocus == circleId
+      if (isActive) trySet { mat.setFloat4("baseColor", 0f, 1f, 0f, 1f) }
+      else trySet { mat.setFloat4("baseColor", 0f, 0.5f, 0f, 1f) }
+    } else {
+      makeUnlitMaterial(color, 1f) { node.renderable?.material = it }
     }
     animateSphereHighlight(node)
   }
@@ -1709,6 +1731,8 @@ class ReplateCameraView @JvmOverloads constructor(
       anchorNode = null
       anchorContentNode = null
       spheresModels.fill(null)
+      sphereMaterialInstances.fill(null)
+      baseMaterial = null
       focusNode = null
       anchorLocked = false
       planeTrackingEnabled = true
@@ -1756,6 +1780,8 @@ class ReplateCameraView @JvmOverloads constructor(
       anchorNode = null
       anchorContentNode = null
       spheresModels.fill(null)
+      sphereMaterialInstances.fill(null)
+      baseMaterial = null
       focusNode = null
       anchorLocked = false
       planeTrackingEnabled = true

@@ -28,6 +28,7 @@ import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.google.ar.core.Anchor
+import com.google.ar.core.Config
 import com.google.ar.core.Session
 import com.google.ar.core.HitResult
 import com.google.ar.core.Plane
@@ -44,7 +45,6 @@ import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.WritableMap
 import com.facebook.react.uimanager.ThemedReactContext
 import com.facebook.react.uimanager.events.RCTEventEmitter
-import com.google.ar.sceneform.ux.TransformableNode
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
@@ -89,8 +89,12 @@ class ReplateCameraView @JvmOverloads constructor(
     private const val DEFAULT_LINE_HEIGHT = 0.02f   // vertical length
     private const val DEFAULT_LINE_LENGTH = 0.003f  // thin width
     private const val GREEN_HEIGHT_SCALE = 0.7f
+    val COLOR_WHITE = Color(1f, 1f, 1f)
+    val COLOR_GRAY = Color(0.35f, 0.35f, 0.35f)
+    val COLOR_GREEN_BRIGHT = Color(0f, 1f, 0f)
+    val COLOR_GREEN_DIM = Color(0f, 0.4f, 0f)
     private const val DEFAULT_SPHERES_RADIUS = 0.13f
-    private const val DEFAULT_SPHERES_HEIGHT = 0.10f
+    private const val DEFAULT_SPHERES_HEIGHT = 0.40f
     private const val DEFAULT_DISTANCE_BETWEEN_CIRCLES = 0.10f
     private const val DEFAULT_DRAG_SPEED = 7000f
     private const val ANGLE_THRESHOLD = 0.6f  // Radians
@@ -123,7 +127,11 @@ class ReplateCameraView @JvmOverloads constructor(
   private var sessionTimeoutRunnable: Runnable? = null
 
   // Spheres and a "focus node"
-  private val spheresModels = mutableListOf<TransformableNode>()
+  private val spheresModels = mutableListOf<Node>()
+  private val sphereMaterials = arrayOfNulls<Material>(TOTAL_SPHERES_PER_CIRCLE * 2)
+  private val circleMaterials = arrayOfNulls<Material>(2)
+  private val pendingColorUpdates = java.util.concurrent.ConcurrentLinkedQueue<Pair<Int, Color>>()
+  private val bgThread = java.util.concurrent.Executors.newSingleThreadExecutor()
   private var focusNode: FocusNode? = null
 
   // Scene geometry
@@ -224,11 +232,19 @@ class ReplateCameraView @JvmOverloads constructor(
 
     arFragment.setOnTapArPlaneListener { hitResult: HitResult, plane: Plane, motionEvent: MotionEvent ->
       if (anchorNode == null) {
+        val t0 = System.currentTimeMillis()
         anchorNode = createAnchorNode(hitResult)
-        createSpheresAtY(spheresHeight) // Lower circle
-        createSpheresAtY(distanceBetweenCircles + spheresHeight) // Upper circle
+        Log.d(TAG, "PERF anchor createAnchorNode: ${System.currentTimeMillis() - t0}ms")
+        circleInFocus = 0
+        val t1 = System.currentTimeMillis()
+        createSpheresAtY(spheresHeight, 0)
+        createSpheresAtY(distanceBetweenCircles + spheresHeight, 1)
+        Log.d(TAG, "PERF anchor createSpheres: ${System.currentTimeMillis() - t1}ms")
+        val t2 = System.currentTimeMillis()
+        disablePlaneDetection()
+        Log.d(TAG, "PERF anchor disablePlaneDetection: ${System.currentTimeMillis() - t2}ms")
+        Log.d(TAG, "PERF anchor TOTAL: ${System.currentTimeMillis() - t0}ms")
         sendEvent("onAnchorSet")
-        arFragment.arSceneView.planeRenderer.isEnabled = false
         sendEvent("onCompletedTutorial")
         focusNode?.isEnabled = false
       }
@@ -239,57 +255,86 @@ class ReplateCameraView @JvmOverloads constructor(
    * Creates and returns an AnchorNode from a tap HitResult.
    */
   private fun createAnchorNode(hitResult: HitResult): AnchorNode {
-    val anchor: Anchor = hitResult.createAnchor()
+    val session = arFragment.arSceneView.session!!
+    val anchor: Anchor = session.createAnchor(hitResult.hitPose)
     return AnchorNode(anchor).also { node ->
       node.setParent(arFragment.arSceneView.scene)
     }
   }
 
+  private fun disablePlaneDetection() {
+    val session = arFragment.arSceneView.session ?: return
+    val config = session.config
+    config.planeFindingMode = Config.PlaneFindingMode.DISABLED
+    session.configure(config)
+    arFragment.arSceneView.planeRenderer.isEnabled = false
+  }
+
   // ------------------------------------------------------------------------
   // Scene OnUpdateListener => replicates Swift ARSessionDelegate
   // ------------------------------------------------------------------------
+  private var frameCount = 0
+
   override fun onUpdate(frameTime: FrameTime?) {
     val frame = arFragment.arSceneView.arFrame ?: return
     if (frame.camera.trackingState != TrackingState.TRACKING) return
 
-    // Check thermal state periodically to prevent overheating
-    checkThermalState()
+    if (++frameCount % 60 == 0) checkThermalState()
 
-    // If you need per-frame logic, do it here.
-    // Example: check lighting, or do real-time distance checks, etc.
+    val anchor = anchorNode ?: return
+    val anchorPose = anchor.anchor?.pose ?: return
+    val relativeY = frame.camera.pose.ty() - anchorPose.ty()
+    val threshold = DEFAULT_SPHERES_HEIGHT + DEFAULT_DISTANCE_BETWEEN_CIRCLES + DEFAULT_DISTANCE_BETWEEN_CIRCLES / 5f
+    val hysteresis = 0.04f
+    val newIndex = when {
+      circleInFocus == 0 && relativeY >= threshold + hysteresis -> 1
+      circleInFocus == 1 && relativeY < threshold - hysteresis -> 0
+      else -> circleInFocus
+    }
+    updateCircleFocus(newIndex)
+
+    if (pendingColorUpdates.isNotEmpty()) {
+      val t = System.currentTimeMillis()
+      repeat(3) {
+        val update = pendingColorUpdates.poll() ?: return@repeat
+        setSphereColor(update.first, update.second)
+      }
+      val elapsed = System.currentTimeMillis() - t
+      if (elapsed > 1) Log.d(TAG, "PERF onUpdate pendingColors batch: ${elapsed}ms, remaining=${pendingColorUpdates.size}")
+    }
   }
 
   // ------------------------------------------------------------------------
   // Spheres Logic
   // ------------------------------------------------------------------------
   @RequiresApi(Build.VERSION_CODES.N)
-  private fun createSpheresAtY(y: Float) {
-    for (i in 0 until TOTAL_SPHERES_PER_CIRCLE) {
-      val angleRad = Math.toRadians((i * ANGLE_INCREMENT_DEGREES).toDouble()).toFloat()
-      val x = spheresRadius * cos(angleRad.toDouble()).toFloat()
-      val z = spheresRadius * sin(angleRad.toDouble()).toFloat()
-      createSphere(Vector3(x, y, z))
-    }
+  private fun createSpheresAtY(y: Float, circleIndex: Int) {
+    val initialColor = if (circleIndex == 0) COLOR_WHITE else COLOR_GRAY
+    MaterialFactory.makeOpaqueWithColor(context, initialColor)
+      .thenAccept { material: Material ->
+        circleMaterials[circleIndex] = material
+        for (i in 0 until TOTAL_SPHERES_PER_CIRCLE) {
+          val angleRad = Math.toRadians((i * ANGLE_INCREMENT_DEGREES).toDouble()).toFloat()
+          val x = spheresRadius * cos(angleRad.toDouble()).toFloat()
+          val z = spheresRadius * sin(angleRad.toDouble()).toFloat()
+          createSphere(Vector3(x, y, z), material)
+        }
+      }
   }
 
   @RequiresApi(Build.VERSION_CODES.N)
-  private fun createSphere(position: Vector3) {
-    MaterialFactory.makeOpaqueWithColor(context, Color(android.graphics.Color.WHITE))
-      .thenAccept { material: Material ->
-        val center = Vector3.zero()
-        val thickness = sphereRadius * 2
-        // ShapeFactory.makeCube already produces a 6-face box; keep zero corner radius for the flattest look.
-        val lineRenderable = ShapeFactory.makeCube(Vector3(lineLength, lineHeight, thickness), center, material)
-        val lineNode = TransformableNode(arFragment.transformationSystem)
-        lineNode.renderable = lineRenderable
-        lineNode.worldPosition = position
-        // Orient tangentially around the ring
-        val angleRad = Math.atan2(position.z.toDouble(), position.x.toDouble())
-        val angleDeg = Math.toDegrees(angleRad).toFloat() + 90f
-        lineNode.localRotation = Quaternion.axisAngle(Vector3(0f, 1f, 0f), angleDeg)
-        lineNode.setParent(anchorNode)
-        spheresModels.add(lineNode)
-      }
+  private fun createSphere(position: Vector3, material: Material) {
+    val center = Vector3.zero()
+    val thickness = sphereRadius * 2
+    val lineRenderable = ShapeFactory.makeCube(Vector3(lineLength, lineHeight, thickness), center, material)
+    val lineNode = Node()
+    lineNode.renderable = lineRenderable
+    lineNode.worldPosition = position
+    val angleRad = Math.atan2(position.z.toDouble(), position.x.toDouble())
+    val angleDeg = Math.toDegrees(angleRad).toFloat() + 90f
+    lineNode.localRotation = Quaternion.axisAngle(Vector3(0f, 1f, 0f), angleDeg)
+    lineNode.setParent(anchorNode)
+    spheresModels.add(lineNode)
   }
 
 
@@ -312,7 +357,6 @@ class ReplateCameraView @JvmOverloads constructor(
       }
       lastTapTime = currentTime
 
-      Log.d(TAG, "Single tap up at x=${e.x}, y=${e.y}")
       // If you want custom logic (like Swift's "viewTapped"), put it here
       return true
     }
@@ -410,34 +454,52 @@ class ReplateCameraView @JvmOverloads constructor(
 
   fun updateCircleFocus(targetIndex: Int) {
     if (targetIndex != circleInFocus) {
-        setOpacityToCircle(circleInFocus, 0.5f)
-        setOpacityToCircle(targetIndex, 1.0f)
+        val t0 = System.currentTimeMillis()
+        val old = circleInFocus
         circleInFocus = targetIndex
+
+        val t1 = System.currentTimeMillis()
         performHapticFeedback()
+        Log.d(TAG, "PERF circle haptic: ${System.currentTimeMillis() - t1}ms")
+
+        val t2 = System.currentTimeMillis()
+        circleMaterials[old]?.setFloat4("color", COLOR_GRAY)
+        circleMaterials[targetIndex]?.setFloat4("color", COLOR_WHITE)
+        Log.d(TAG, "PERF circle sharedMaterial setFloat4: ${System.currentTimeMillis() - t2}ms")
+
+        val t3 = System.currentTimeMillis()
+        bgThread.execute {
+            val snapshot = buildColorUpdates(old, active = false) +
+                           buildColorUpdates(targetIndex, active = true)
+            Log.d(TAG, "PERF circle buildColorUpdates (bg): ${System.currentTimeMillis() - t3}ms, items=${snapshot.size}")
+            pendingColorUpdates.addAll(snapshot)
+        }
+
+        Log.d(TAG, "PERF circle TOTAL (main thread): ${System.currentTimeMillis() - t0}ms")
     }
+  }
+
+  private fun buildColorUpdates(circleId: Int, active: Boolean): List<Pair<Int, Color>> {
+    val spheresSet = if (circleId == 1) upperSpheresSet else lowerSpheresSet
+    val offset = if (circleId == 1) TOTAL_SPHERES_PER_CIRCLE else 0
+    val color = if (active) COLOR_GREEN_BRIGHT else COLOR_GREEN_DIM
+    return spheresSet.indices.filter { spheresSet[it] }.map { Pair(offset + it, color) }
+  }
+
+  private fun setSphereColor(index: Int, color: Color) {
+    if (index >= spheresModels.size) return
+    val node = spheresModels[index]
+    val material = sphereMaterials[index] ?: run {
+      val copy = node.renderable?.material?.makeCopy() ?: return
+      node.renderable?.material = copy
+      sphereMaterials[index] = copy
+      copy
+    }
+    material.setFloat4("color", color)
   }
 
   private fun performHapticFeedback() {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-        val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as android.os.Vibrator
-        vibrator.vibrate(android.os.VibrationEffect.createOneShot(50, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
-    }
-  }
-
-  private fun setOpacityToCircle(circleId: Int, opacity: Float) {
-    val start = if (circleId == 0) 0 else TOTAL_SPHERES_PER_CIRCLE
-    val end = start + TOTAL_SPHERES_PER_CIRCLE
-    for (i in start until end) {
-        if (i < spheresModels.size) {
-            val node = spheresModels[i]
-            val material = node.renderable?.material?.makeCopy()
-            if (material != null) {
-                val color = Color(1f, 1f, 1f)
-                material.setFloat4("color", color.r, color.g, color.b, opacity)
-                node.renderable?.material = material
-            }
-        }
-    }
+    performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
   }
 
   fun checkCameraDistance(deviceTargetInfo: DeviceTargetInfo): Boolean {
@@ -494,20 +556,18 @@ class ReplateCameraView @JvmOverloads constructor(
             upperSpheresSet[sphereIndex] = true
             photosFromDifferentAnglesTaken++
             newAngle = true
-            updateSphereColor(72 + sphereIndex, Color(0f, 1f, 0f)) // Green
-            if (upperSpheresSet.all { it }) {
-                sendEvent("onCompletedUpperSpheres")
-            }
+            val green = if (circleInFocus == 1) COLOR_GREEN_BRIGHT else COLOR_GREEN_DIM
+            setSphereColor(TOTAL_SPHERES_PER_CIRCLE + sphereIndex, green)
+            if (upperSpheresSet.all { it }) sendEvent("onCompletedUpperSpheres")
         }
     } else { // Lower circle
         if (!lowerSpheresSet[sphereIndex]) {
             lowerSpheresSet[sphereIndex] = true
             photosFromDifferentAnglesTaken++
             newAngle = true
-            updateSphereColor(sphereIndex, Color(0f, 1f, 0f)) // Green
-            if (lowerSpheresSet.all { it }) {
-                sendEvent("onCompletedLowerSpheres")
-            }
+            val green = if (circleInFocus == 0) COLOR_GREEN_BRIGHT else COLOR_GREEN_DIM
+            setSphereColor(sphereIndex, green)
+            if (lowerSpheresSet.all { it }) sendEvent("onCompletedLowerSpheres")
         }
     }
 
@@ -517,15 +577,6 @@ class ReplateCameraView @JvmOverloads constructor(
     callback(newAngle)
   }
 
-  private fun updateSphereColor(index: Int, color: Color) {
-    if (index < spheresModels.size) {
-        val node = spheresModels[index]
-        val material = node.renderable?.material?.makeCopy()
-        material?.setFloat4("color", color)
-        node.renderable?.material = material
-        node.localScale = Vector3(1f, GREEN_HEIGHT_SCALE, 1f)
-    }
-  }
 
   private fun angleBetweenAnchorXAndCamera(anchor: AnchorNode, cameraTransform: com.google.ar.core.Pose): Float {
     val anchorTransform = anchor.anchor?.pose ?: return 0f
@@ -563,7 +614,6 @@ class ReplateCameraView @JvmOverloads constructor(
       gravityVector["x"] = event.values[0].toDouble()
       gravityVector["y"] = event.values[1].toDouble()
       gravityVector["z"] = event.values[2].toDouble()
-      Log.d(TAG, "Gravity vector => x=${gravityVector["x"]}, y=${gravityVector["y"]}, z=${gravityVector["z"]}")
     }
   }
 
@@ -622,7 +672,6 @@ class ReplateCameraView @JvmOverloads constructor(
       arFragment.arSceneView.scene.removeOnUpdateListener(this)
       
       isSessionPaused = true
-      Log.d(TAG, "AR session paused")
     } catch (e: Exception) {
       Log.e(TAG, "Error pausing AR session: ${e.message}")
     }
@@ -645,7 +694,6 @@ class ReplateCameraView @JvmOverloads constructor(
       arFragment.arSceneView.scene.addOnUpdateListener(this)
       
       isSessionPaused = false
-      Log.d(TAG, "AR session resumed")
     } catch (e: Exception) {
       Log.e(TAG, "Error resuming AR session: ${e.message}")
     }
@@ -707,9 +755,12 @@ class ReplateCameraView @JvmOverloads constructor(
       // Clear references
       anchorNode = null
       spheresModels.clear()
+      circleMaterials[0] = null
+      circleMaterials[1] = null
+      sphereMaterials.fill(null)
+      pendingColorUpdates.clear()
       focusNode = null
       
-      Log.d(TAG, "Resources cleaned up")
     } catch (e: Exception) {
       Log.e(TAG, "Error cleaning up resources: ${e.message}")
     }
@@ -792,6 +843,10 @@ class ReplateCameraView @JvmOverloads constructor(
       }
       anchorNode = null
       spheresModels.clear()
+      circleMaterials[0] = null
+      circleMaterials[1] = null
+      sphereMaterials.fill(null)
+      pendingColorUpdates.clear()
       focusNode = null
 
       // Reset booleans
@@ -821,7 +876,6 @@ class ReplateCameraView @JvmOverloads constructor(
       lastSessionStartTime = SystemClock.elapsedRealtime()
       startSessionTimeoutMonitoring()
       
-      Log.d(TAG, "AR session reset successfully")
     } catch (e: Exception) {
       Log.e(TAG, "Error resetting AR session: ${e.message}")
     }

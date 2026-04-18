@@ -156,37 +156,20 @@ class ReplateCameraCaptureController(
                 validateAndProcessPhoto(unlimited, promise)
             } catch (e: Exception) {
                 logE("Unexpected error in takePhoto", e)
-                SafeCallbackHandler(promise).reject(ARError.Unknown)
             }
         }
     }
 
     private fun validateAndProcessPhoto(unlimited: Boolean, promise: Promise) {
-        val callback = SafeCallbackHandler(promise)
+        val anchorNode = cameraView.getAnchorNode() ?: return
+        if (!isAnchorNodeValid(anchorNode)) return
 
-        val anchorNode = cameraView.getAnchorNode()
-        if (anchorNode == null) {
-            rejectWithLog(callback, ARError.NoAnchor, "anchorNode is null")
-            return
-        }
-        if (!isAnchorNodeValid(anchorNode)) {
-            rejectWithLog(callback, ARError.InvalidAnchor, "anchor world scale is invalid")
-            return
-        }
-
-        val frame = arSceneView.arFrame
-        if (frame == null) {
-            rejectWithLog(callback, ARError.TransformError, "arFrame is null")
-            return
-        }
+        val frame = arSceneView.arFrame ?: return
 
         val deviceTargetInfo = getDeviceTargetInfo(frame)
-        if (!deviceTargetInfo.isInFocus) {
-            rejectWithLog(callback, ARError.NotInFocus, "target not in focus targetIndex=${deviceTargetInfo.targetIndex}")
-            return
-        }
+        if (!deviceTargetInfo.isInFocus) return
 
-        processTargetedDevice(deviceTargetInfo, unlimited, callback)
+        processTargetedDevice(deviceTargetInfo, unlimited, SafeCallbackHandler(promise))
     }
 
     private fun processTargetedDevice(
@@ -199,16 +182,10 @@ class ReplateCameraCaptureController(
         Handler(Looper.getMainLooper()).post {
             cameraView.updateCircleFocus(deviceTargetInfo.targetIndex)
 
-            if (!cameraView.checkCameraDistance(deviceTargetInfo)) {
-                rejectWithLog(callback, ARError.NotInRange, "camera distance out of accepted range")
-                return@post
-            }
+            if (!cameraView.checkCameraDistance(deviceTargetInfo)) return@post
 
             cameraView.updateSpheres(deviceTargetInfo, frame.camera) { success ->
-                if (!unlimited && !success) {
-                    rejectWithLog(callback, ARError.TooManyImages, "photo rejected because same angle already captured")
-                    return@updateSpheres
-                }
+                if (!unlimited && !success) return@updateSpheres
 
                 cameraView.performPhotoTakenHaptic()
 
