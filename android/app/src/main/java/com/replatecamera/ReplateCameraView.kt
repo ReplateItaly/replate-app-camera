@@ -528,12 +528,6 @@ class ReplateCameraView @JvmOverloads constructor(
       setupRetryScheduled = false
       logI("AR fragment setup completed")
 
-      // ArFragment.onResume() already called arSceneView.resume() as part of its own
-      // Fragment lifecycle (triggered by commitNowAllowingStateLoss). Calling resume()
-      // again here would double-resume the session, potentially throwing
-      // CameraNotAvailableException and breaking the AR session on first open.
-      // Instead we just register our own listeners and mark the session active.
-      // Subsequent pause/resume cycles are handled via LifecycleEventListener.
       try {
         sceneView._lightEstimationConfig = LightEstimationConfig.DISABLED
         sceneView.session?.let { applySessionConfiguration(it) }
@@ -541,43 +535,18 @@ class ReplateCameraView @JvmOverloads constructor(
         registerSensorListener()
         sceneView.scene.addOnUpdateListener(this)
         isSessionPaused = false
-        logI("AR session listeners activated (no double-resume)")
+        logI("INIT [1/4] listeners activated isSessionPaused=false")
       } catch (e: Exception) {
-        logE("Failed to activate session listeners after init", e)
+        logE("INIT [1/4] FAILED to activate listeners", e)
         scheduleResumeRetry(200)
       }
 
-      // Apply layout immediately after initialization in case onLayout already fired
-      // with correct dimensions before the fragment was ready.
       applyFragmentLayout()
 
-      // gorisse calls arSceneView.resume() during commitNowAllowingStateLoss, BEFORE the
-      // SurfaceView surface exists (view is 0×0 at that point). Filament starts without a
-      // valid EGL surface, so AR content never renders even though the camera feed shows.
-      // Fix: listen for surfaceCreated on the sceneView and run the full pauseSession +
-      // resumeSession cycle so Filament re-initialises against the real surface. Using
-      // resumeSession (via scheduleResumeRetry) rather than a bare sceneView.resume() is
-      // critical — it re-applies _lightEstimationConfig, session config, plane renderer
-      // state, and the scene update listener that a bare resume() skips.
-      sceneView.holder.addCallback(object : android.view.SurfaceHolder.Callback {
-        override fun surfaceCreated(holder: android.view.SurfaceHolder) {
-          sceneView.holder.removeCallback(this)
-          logI("surfaceCreated hook: full pauseSession + resumeSession re-init")
-          post {
-            if (isViewAttached) {
-              // pauseSession() removes update listener and stops Choreographer cleanly.
-              if (!isSessionPaused) {
-                pauseSession()
-              }
-              // scheduleResumeRetry calls the full resumeSession() path (re-applies
-              // light config, session config, plane renderer, update listener).
-              scheduleResumeRetry(50)
-            }
-          }
-        }
-        override fun surfaceChanged(h: android.view.SurfaceHolder, f: Int, w: Int, ht: Int) {}
-        override fun surfaceDestroyed(h: android.view.SurfaceHolder) {}
-      })
+      val surfaceValid = try { sceneView.holder.surface?.isValid == true } catch (_: Exception) { false }
+      logI("INIT [2/4] surface check: surfaceValid=$surfaceValid viewSize=${width}x${height} sceneViewSize=${sceneView.width}x${sceneView.height}")
+
+      logI("INIT [3/4] session already running via gorisse (surfaceValid=$surfaceValid), no reinit needed")
 
     } catch (t: Throwable) {
       logE("Failed during ArSceneView initialization", t)
@@ -751,15 +720,18 @@ class ReplateCameraView @JvmOverloads constructor(
 
   private fun scheduleResumeRetry(delayMs: Long = 150L) {
     if (resumeRetryScheduled || !isViewAttached) {
-      logD("Skipping resume retry (alreadyScheduled=$resumeRetryScheduled, attached=$isViewAttached)")
+      logD("RESUME_RETRY skipped alreadyScheduled=$resumeRetryScheduled attached=$isViewAttached")
       return
     }
-    logI("Scheduling resume retry in ${delayMs}ms")
+    logI("RESUME_RETRY scheduled in ${delayMs}ms")
     resumeRetryScheduled = true
     postDelayed({
       resumeRetryScheduled = false
+      logI("RESUME_RETRY firing isViewAttached=$isViewAttached isSessionPaused=$isSessionPaused")
       if (isViewAttached && isSessionPaused) {
         resumeSession()
+      } else {
+        logI("RESUME_RETRY no-op (attached=$isViewAttached paused=$isSessionPaused)")
       }
     }, delayMs)
   }
@@ -799,7 +771,7 @@ class ReplateCameraView @JvmOverloads constructor(
           contentNode.setParent(node)
           contentNode.localPosition = Vector3.zero()
           contentNode.localRotation = Quaternion.identity()
-          contentNode.localScale = Vector3(1f, 1f, 1f)
+          contentNode.localScale = Vector3(0.8f, 0.8f, 0.8f)
         }
         logI("Anchor created (anchorHash=${anchor.hashCode()}, x=${pose.tx()}, y=${pose.ty()}, z=${pose.tz()})")
       }
@@ -943,20 +915,28 @@ class ReplateCameraView @JvmOverloads constructor(
       val camera = sceneView.scene.camera
       if (e2.action == MotionEvent.ACTION_MOVE && camera != null) {
         detachAnchorForDragIfNeeded(node)
+        // distanceY > 0 when finger moves up; we want up → anchor moves away → positive forward
         val translationX = -distanceX
-        val translationY = -distanceY
+        val translationY = distanceY
 
-        val cameraForward = Vector3(camera.forward.x, 0f, camera.forward.z)
-        val cameraRight = Vector3(camera.right.x, 0f, camera.right.z)
+        val cameraPos = camera.worldPosition
+        val anchorPos = node.worldPosition
 
-        val forwardNorm = normalize(cameraForward)
-        val rightNorm = normalize(cameraRight)
+        // Forward = horizontal direction from camera toward anchor.
+        val dirToAnchor = Vector3.subtract(anchorPos, cameraPos)
+        val forwardNorm = normalize(Vector3(dirToAnchor.x, 0f, dirToAnchor.z))
+        // Right = cross(forward, up) so that +X is camera-right when forward = -Z
+        val rightNorm = Vector3(-forwardNorm.z, 0f, forwardNorm.x)
+
+        // Scale movement by distance from camera to anchor so drag feels
+        // consistent in screen space regardless of how far the camera is.
+        val cameraDistance = Vector3.subtract(anchorPos, cameraPos).length().coerceAtLeast(0.1f)
 
         val adjustedMovement = Vector3(
           translationX * rightNorm.x + translationY * forwardNorm.x,
           0f,
           translationX * rightNorm.z + translationY * forwardNorm.z
-        ).scaled(1f / dragSpeed)
+        ).scaled(cameraDistance / dragSpeed)
 
         val initialPos = node.worldPosition
         node.worldPosition = Vector3.add(initialPos, adjustedMovement)
@@ -1508,7 +1488,7 @@ class ReplateCameraView @JvmOverloads constructor(
   override fun onAttachedToWindow() {
     super.onAttachedToWindow()
     isViewAttached = true
-    logI("onAttachedToWindow")
+    logI("LIFECYCLE onAttachedToWindow viewSize=${width}x${height} arInitialized=$arInitialized")
     (context as? ThemedReactContext)?.addLifecycleEventListener(this)
     setupArFragmentWhenReady()
   }
@@ -1528,12 +1508,10 @@ class ReplateCameraView @JvmOverloads constructor(
 
   // LifecycleEventListener — mirrors iOS setupAppStateObservers / appDidEnterBackground / appWillEnterForeground
   override fun onHostResume() {
-    logI("onHostResume")
+    logI("LIFECYCLE onHostResume arInitialized=$arInitialized isSessionPaused=$isSessionPaused isViewAttached=$isViewAttached")
     if (arInitialized) {
       resumeSession()
     }
-    // If arInitialized is false, the session will be set up by setupArFragmentWhenReady()
-    // and activation will happen directly at the end of initializeSceneView().
   }
 
   override fun onHostPause() {
@@ -1599,31 +1577,32 @@ class ReplateCameraView @JvmOverloads constructor(
       logD("resumeSession ignored: already resumed")
       return
     }
-    logI("Resuming AR session")
+    logI("RESUME [start]")
 
     val reactContext = context as? ThemedReactContext
     val activity = reactContext?.currentActivity
     if (activity == null) {
-      logW("Cannot resume session: current activity is null")
+      logW("RESUME blocked: currentActivity=null → retry")
       scheduleResumeRetry()
       return
     }
     if (!hasCameraPermission(activity)) {
       ActivityCompat.requestPermissions(activity, arrayOf(Manifest.permission.CAMERA), 1001)
-      logI("Camera permission missing, requested and postponing AR resume")
+      logW("RESUME blocked: camera permission missing → retry")
       scheduleResumeRetry()
       return
     }
     if (!ensureArCoreReady(activity)) {
-      logW("ARCore not ready, resume postponed")
+      logW("RESUME blocked: ARCore not ready → retry (scheduled inside ensureArCoreReady)")
       return
     }
     val sceneView = getArSceneViewOrNull()
     if (sceneView == null) {
-      logW("resumeSession postponed: ArSceneView not ready yet")
+      logW("RESUME blocked: sceneView=null → retry")
       scheduleResumeRetry(100)
       return
     }
+    logI("RESUME [executing] sceneView=${sceneView.width}x${sceneView.height} surfaceValid=${try { sceneView.holder.surface?.isValid } catch (_: Exception) { "err" }}")
     try {
       sceneView.scene.removeOnUpdateListener(this)
       sceneView._lightEstimationConfig = LightEstimationConfig.DISABLED
@@ -1632,10 +1611,10 @@ class ReplateCameraView @JvmOverloads constructor(
       updatePlaneRendererState(sceneView, planeTrackingEnabled)
       registerSensorListener()
       sceneView.scene.addOnUpdateListener(this)
-      
+
       isSessionPaused = false
       expectingFirstFrame = true
-      logI("AR session resumed")
+      logI("RESUME [success] isSessionPaused=false")
     } catch (e: CameraNotAvailableException) {
       // If the anchor is already placed, don't close the session — that would lose
       // all node positions. Just wait and retry; tracking will resume when the camera

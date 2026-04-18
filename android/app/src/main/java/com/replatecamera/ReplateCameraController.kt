@@ -1,6 +1,8 @@
 package com.replatecamera
 
 import android.app.ActivityManager
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import com.facebook.react.bridge.Callback
 import com.facebook.react.bridge.Promise
@@ -211,25 +213,33 @@ class ReplateCameraController(private val reactContext: ReactApplicationContext)
   @ReactMethod
   fun reset() {
     Log.i(TAG, "reset requested")
-    ReplateCameraView.getCurrentInstance()?.resetSession()
+    Handler(Looper.getMainLooper()).post {
+      ReplateCameraView.getCurrentInstance()?.resetSession()
+    }
   }
 
   @ReactMethod
   fun pauseSession() {
     Log.i(TAG, "pauseSession requested")
-    ReplateCameraView.getCurrentInstance()?.pauseSessionPublic()
+    Handler(Looper.getMainLooper()).post {
+      ReplateCameraView.getCurrentInstance()?.pauseSessionPublic()
+    }
   }
 
   @ReactMethod
   fun resumeSession() {
     Log.i(TAG, "resumeSession requested")
-    ReplateCameraView.getCurrentInstance()?.resumeSessionPublic()
+    Handler(Looper.getMainLooper()).post {
+      ReplateCameraView.getCurrentInstance()?.resumeSessionPublic()
+    }
   }
 
   @ReactMethod
   fun stopSession() {
     Log.i(TAG, "stopSession requested")
-    ReplateCameraView.getCurrentInstance()?.cleanupResourcesPublic()
+    Handler(Looper.getMainLooper()).post {
+      ReplateCameraView.getCurrentInstance()?.cleanupResourcesPublic()
+    }
   }
 
   @ReactMethod

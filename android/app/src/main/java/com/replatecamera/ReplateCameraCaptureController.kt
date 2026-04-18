@@ -257,8 +257,9 @@ class ReplateCameraCaptureController(
         val isInFocus = angleToAnchor < ANGLE_THRESHOLD
 
         val relativeCameraPose = anchorPose.inverse().compose(cameraPose)
-        val spheresHeight = 0.15f
-        val distanceBetweenCircles = 0.10f
+        val anchorScale = cameraView.getTransformRootNode()?.worldScale?.y?.takeIf { it > 0.001f } ?: 1f
+        val spheresHeight = 0.15f * anchorScale
+        val distanceBetweenCircles = 0.10f * anchorScale
         val twoThirdsDistance = spheresHeight + distanceBetweenCircles + (distanceBetweenCircles / 5f)
         val targetIndex = if (isInFocus) {
             if (relativeCameraPose.ty() < twoThirdsDistance) 1 else 0
