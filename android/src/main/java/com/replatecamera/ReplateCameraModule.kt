@@ -10,7 +10,7 @@ class ReplateCameraModule(private val reactContext: ReactApplicationContext) :
   ReactContextBaseJavaModule(reactContext) {
 
   companion object {
-    const val NAME = "ReplateCameraModule"
+    const val NAME = "ReplateCameraController"
   }
 
   override fun getName(): String = NAME

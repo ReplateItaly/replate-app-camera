@@ -86,7 +86,7 @@ export function registerBackInRangeCallback(callback: () => void) {
   ReplateCameraModule.registerBackInRangeCallback(callback);
 }
 
-export function getMemoryUsage(): Promise<{memoryUsageMB: number}> {
+export function getMemoryUsage(): Promise<{ memoryUsageMB: number }> {
   return ReplateCameraModule.getMemoryUsage();
 }
 
@@ -104,4 +104,22 @@ export function resumeSession() {
 
 export function stopSession() {
   ReplateCameraModule.stopSession();
+}
+
+export function cancelUploadsForSender(sender: string): Promise<any> {
+  return ReplateCameraModule.cancelUploadsForSender(sender);
+}
+
+export function finalizeUpload(
+  sender: string,
+  token: string,
+  isGaussian: boolean,
+  hasBackground: boolean
+): Promise<any> {
+  return ReplateCameraModule.finalizeUpload(
+    sender,
+    token,
+    isGaussian,
+    hasBackground
+  );
 }

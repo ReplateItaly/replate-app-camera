@@ -1,86 +1,31 @@
-buildscript {
-  // Buildscript is evaluated before everything else so we can't use getExtOrDefault
-  def kotlin_version = rootProject.ext.has("kotlinVersion") ? rootProject.ext.get("kotlinVersion") : "1.9.22"
+// Top-level build file where you can add configuration options common to all sub-projects/modules.
 
+buildscript {
+  ext {
+    buildToolsVersion = findProperty('android.buildToolsVersion') ?: '34.0.0'
+    minSdkVersion = Integer.parseInt(findProperty('android.minSdkVersion') ?: '24')
+    compileSdkVersion = Integer.parseInt(findProperty('android.compileSdkVersion') ?: '34')
+    targetSdkVersion = Integer.parseInt(findProperty('android.targetSdkVersion') ?: '34')
+    kotlinVersion = findProperty('android.kotlinVersion') ?: '1.9.22'
+    ndkVersion = findProperty('android.ndkVersion') ?: '27.1.12297006'
+  }
   repositories {
     google()
     mavenCentral()
   }
-
   dependencies {
-    classpath "com.android.tools.build:gradle:8.4.0"
-    // noinspection DifferentKotlinGradleVersion
-    classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+    classpath("com.android.tools.build:gradle:8.5.2")
+    classpath("com.facebook.react:react-native-gradle-plugin")
+    classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:${kotlinVersion}")
   }
 }
 
-def isNewArchitectureEnabled() {
-  return rootProject.hasProperty("newArchEnabled") && rootProject.getProperty("newArchEnabled") == "true"
-}
-
-apply plugin: "com.android.library"
-apply plugin: "kotlin-android"
-
-if (isNewArchitectureEnabled()) {
-  apply plugin: "com.facebook.react"
-}
-
-def getExtOrDefault(name) {
-  return rootProject.ext.has(name) ? rootProject.ext.get(name) : project.properties["ReplateCamera_" + name]
-}
-
-def getExtOrIntegerDefault(name) {
-  return rootProject.ext.has(name) ? rootProject.ext.get(name) : (project.properties["ReplateCamera_" + name]).toInteger()
-}
-
-android {
-  namespace "com.replatecamera"
-  compileSdkVersion getExtOrIntegerDefault("compileSdkVersion")
-
-  defaultConfig {
-    minSdkVersion getExtOrIntegerDefault("minSdkVersion")
-    targetSdkVersion getExtOrIntegerDefault("targetSdkVersion")
-
-  }
-
-  buildTypes {
-    release {
-      minifyEnabled false
-    }
-  }
-
-  lintOptions {
-    disable "GradleCompatible"
-  }
-
-  compileOptions {
-    sourceCompatibility JavaVersion.VERSION_17
-    targetCompatibility JavaVersion.VERSION_17
-  }
-
-  kotlinOptions {
-    jvmTarget = "17"
+allprojects {
+  repositories {
+    google()
+    mavenCentral()
+    maven { url 'https://www.jitpack.io' }
   }
 }
 
-repositories {
-  mavenCentral()
-  google()
-  maven { url 'https://github.com/google-ar/sceneform-android-sdk' }
-}
-
-def kotlin_version = getExtOrDefault("kotlinVersion")
-
-dependencies {
-  // For < 0.71, this will be from the local maven repo
-  // For > 0.71, this will be replaced by `com.facebook.react:react-android:$version` by react gradle plugin
-  //noinspection GradleDynamicVersion
-  implementation "com.facebook.react:react-native:+"
-  implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version"
-  implementation 'com.google.ar:core:1.45.0'
-  implementation 'com.google.ar.sceneform.ux:sceneform-ux:1.17.1'
-  implementation("androidx.exifinterface:exifinterface:1.3.7")
-  implementation "androidx.lifecycle:lifecycle-process:2.6.1"
-  implementation 'com.google.android.material:material:1.12.0'
-}
-
+apply plugin: "com.facebook.react.rootproject"
