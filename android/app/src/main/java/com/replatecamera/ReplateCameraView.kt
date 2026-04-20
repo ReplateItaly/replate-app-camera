@@ -58,6 +58,7 @@ import com.gorisse.thomas.sceneform.light.LightEstimationConfig
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.util.Collections
 import java.util.LinkedList
 import java.util.EnumSet
 import kotlin.math.acos
@@ -114,6 +115,7 @@ class ReplateCameraView @JvmOverloads constructor(
     // Stats
     var totalPhotosTaken = 0
     var photosFromDifferentAnglesTaken = 0
+    val capturedPhotoPaths: MutableList<String> = Collections.synchronizedList(mutableListOf())
 
     fun getCurrentInstance(): ReplateCameraView? = instance
   }
@@ -1591,6 +1593,7 @@ class ReplateCameraView @JvmOverloads constructor(
     }
     if (!isSessionPaused) {
       logD("resumeSession ignored: already resumed")
+      capturedPhotoPaths.clear()
       return
     }
     logI("RESUME [start]")

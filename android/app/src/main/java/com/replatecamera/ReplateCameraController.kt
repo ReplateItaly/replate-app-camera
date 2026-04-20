@@ -4,6 +4,7 @@ import android.app.ActivityManager
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Callback
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
@@ -224,6 +225,14 @@ class ReplateCameraController(private val reactContext: ReactApplicationContext)
       Log.e(TAG, "getMemoryUsage failed", e)
       promise.resolve(mapOf("memoryUsageMB" to -1.0))
     }
+  }
+
+  @ReactMethod
+  fun getCapturedPhotoPaths(promise: Promise) {
+    val paths = ReplateCameraView.capturedPhotoPaths.toList()
+    val array = Arguments.createArray()
+    paths.forEach { array.pushString(it) }
+    promise.resolve(array)
   }
 
   @ReactMethod
