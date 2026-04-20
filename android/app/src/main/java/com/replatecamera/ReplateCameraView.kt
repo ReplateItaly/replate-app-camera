@@ -44,6 +44,7 @@ import com.google.ar.core.exceptions.UnavailableException
 import com.google.ar.sceneform.*
 import com.google.ar.sceneform.math.Vector3
 import com.google.ar.sceneform.math.Quaternion
+import com.google.ar.sceneform.rendering.CameraStream
 import com.google.ar.sceneform.rendering.Color
 import com.google.ar.sceneform.rendering.Material
 import com.google.ar.sceneform.rendering.MaterialFactory
@@ -473,6 +474,7 @@ class ReplateCameraView @JvmOverloads constructor(
       // Ensure the debug overlay stays on top of the ArSceneView
       debugOverlayTextView?.bringToFront()
       sceneView._lightEstimationConfig = LightEstimationConfig.DISABLED
+      sceneView.cameraStream.depthOcclusionMode = CameraStream.DepthOcclusionMode.DEPTH_OCCLUSION_ENABLED
 
       // Initialize controllers only when scene view is ready.
       cameraController = ReplateCameraCaptureController(context, sceneView, this)
@@ -558,7 +560,10 @@ class ReplateCameraView @JvmOverloads constructor(
   private fun applySessionConfiguration(session: Session, existingConfig: Config? = null) {
     selectBestCameraConfig(session)
     val config = existingConfig ?: Config(session)
-    config.focusMode = Config.FocusMode.AUTO
+    config.focusMode = Config.FocusMode.FIXED
+    if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
+      config.depthMode = Config.DepthMode.AUTOMATIC
+    }
     // After anchor placement disable plane finding so ARCore stops updating planes
     // (prevents world re-alignment from affecting the anchor). Light estimation stays
     // enabled so Sceneform has ambient light and materials render with correct colors.
@@ -602,7 +607,10 @@ class ReplateCameraView @JvmOverloads constructor(
           CameraConfig.TargetFps.TARGET_FPS_30,
           CameraConfig.TargetFps.TARGET_FPS_60
         )
-        depthSensorUsage = EnumSet.of(CameraConfig.DepthSensorUsage.DO_NOT_USE)
+        depthSensorUsage = EnumSet.of(
+          CameraConfig.DepthSensorUsage.DO_NOT_USE,
+          CameraConfig.DepthSensorUsage.REQUIRE_AND_USE
+        )
       }
       val configs = session.getSupportedCameraConfigs(filter).ifEmpty {
         session.getSupportedCameraConfigs()

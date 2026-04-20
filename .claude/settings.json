@@ -5,7 +5,23 @@
       "Bash(/Users/luca/Library/Android/sdk/platform-tools/adb install *)",
       "Bash(/Users/luca/Library/Android/sdk/platform-tools/adb shell *)",
       "Bash(npx prettier *)",
-      "Bash(npx eslint *)"
+      "Bash(npx eslint *)",
+      "WebFetch(domain:developers.google.com)",
+      "Bash(mkdir -p /tmp/sceneform_inspect)",
+      "Bash(javap -p com/google/ar/sceneform/ArSceneView.class)",
+      "Bash(javap -p /tmp/sceneform_inspect/com/google/ar/sceneform/ArSceneView.class)",
+      "Bash(mkdir -p /tmp/sceneform_ux)",
+      "Read(//tmp/**)",
+      "Bash(unzip -q /tmp/ux-1.23.0.aar -d /tmp/su2)",
+      "Bash(unzip -q /tmp/su2/classes.jar -d /tmp/su2classes)",
+      "Bash(cp /Users/luca/.gradle/caches/modules-2/files-2.1/com.gorisse.thomas.sceneform/core/1.23.0/2519d19b3c75058f47fb164d02a8a9204acd34d9/core-1.23.0.aar /tmp/core-1.23.0.aar)",
+      "Bash(unzip -q /tmp/core-1.23.0.aar -d /tmp/score)",
+      "Bash(unzip -q /tmp/score/classes.jar -d /tmp/score_classes)",
+      "Bash(javap -p /tmp/score_classes/com/google/ar/sceneform/rendering/CameraStream.class)",
+      "Bash(javap -p '/tmp/score_classes/com/google/ar/sceneform/rendering/CameraStream$DepthOcclusionMode.class')"
+    ],
+    "additionalDirectories": [
+      "/Users/luca/.gradle/caches/modules-2/files-2.1/com.gorisse.thomas.sceneform/ux/1.23.0/9ce9add8bc180618a24f59a297648fa39286852c"
     ]
   }
 }
