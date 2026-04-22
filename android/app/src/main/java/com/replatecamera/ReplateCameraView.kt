@@ -18,6 +18,7 @@ import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
+import android.view.SurfaceHolder
 import android.view.ViewTreeObserver
 import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
@@ -185,6 +186,7 @@ class ReplateCameraView @JvmOverloads constructor(
   private var selectedCameraSessionHash: Int? = null
   private var setupLayoutListener: ViewTreeObserver.OnGlobalLayoutListener? = null
   private var gestureRoutingInstalled = false
+  private var surfaceDestroyCallbackInstalled = false
   private val debugLogLines = LinkedList<String>()
   private var debugOverlayTextView: TextView? = null
 
@@ -368,7 +370,7 @@ class ReplateCameraView @JvmOverloads constructor(
     }
 
     try {
-      arFragment = ArFragment()
+      arFragment = ReplateArFragment()
       arFragment.setOnSessionConfigurationListener { session: Session, config: Config ->
         applySessionConfiguration(session, config)
       }
@@ -463,6 +465,22 @@ class ReplateCameraView @JvmOverloads constructor(
     }
   }
 
+  private fun installSurfaceDestroyCallback(sceneView: ArSceneView) {
+    if (surfaceDestroyCallbackInstalled) return
+    surfaceDestroyCallbackInstalled = true
+    try {
+      sceneView.holder.addCallback(object : SurfaceHolder.Callback {
+        override fun surfaceCreated(holder: SurfaceHolder) {}
+        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
+        override fun surfaceDestroyed(holder: SurfaceHolder) {
+          pauseSession()
+        }
+      })
+    } catch (t: Throwable) {
+      logE("Failed to install SurfaceHolder callback", t)
+    }
+  }
+
   private fun initializeSceneView(sceneView: ArSceneView) {
     if (arInitialized) {
       logD("initializeSceneView skipped: already initialized")
@@ -491,6 +509,7 @@ class ReplateCameraView @JvmOverloads constructor(
       sceneView.scene.addChild(focusNode)
       logD("Focus node attached to scene")
       installGestureRouting(sceneView)
+      installSurfaceDestroyCallback(sceneView)
 
       arFragment.setOnTapArPlaneListener { hitResult: HitResult, plane: Plane, _: MotionEvent ->
         val now = System.currentTimeMillis()
@@ -609,10 +628,8 @@ class ReplateCameraView @JvmOverloads constructor(
           CameraConfig.TargetFps.TARGET_FPS_30,
           CameraConfig.TargetFps.TARGET_FPS_60
         )
-        depthSensorUsage = EnumSet.of(
-          CameraConfig.DepthSensorUsage.DO_NOT_USE,
-          CameraConfig.DepthSensorUsage.REQUIRE_AND_USE
-        )
+        // Avoid hardware depth sensors (depth images can change dimensions and trigger Sceneform overflows)
+        depthSensorUsage = EnumSet.of(CameraConfig.DepthSensorUsage.DO_NOT_USE)
       }
       val configs = session.getSupportedCameraConfigs(filter).ifEmpty {
         session.getSupportedCameraConfigs()
@@ -1594,6 +1611,7 @@ class ReplateCameraView @JvmOverloads constructor(
     if (!isSessionPaused) {
       logD("resumeSession ignored: already resumed")
       capturedPhotoPaths.clear()
+      captureActive = true
       return
     }
     logI("RESUME [start]")

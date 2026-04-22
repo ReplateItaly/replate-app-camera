@@ -10,7 +10,6 @@ import com.google.ar.sceneform.Node
 import com.google.ar.sceneform.math.Quaternion
 import com.google.ar.sceneform.math.Vector3
 import com.google.ar.sceneform.rendering.Color
-import com.google.ar.sceneform.rendering.Material
 import com.google.ar.sceneform.rendering.MaterialFactory
 import com.google.ar.sceneform.rendering.ShapeFactory
 import kotlin.math.sqrt
@@ -39,64 +38,45 @@ class FocusNode(private val context: Context) : Node() {
     }
 
     private fun buildSquare() {
-        loadUnlitMaterial { material ->
-            // Top and Bottom bars — extend along X
-            for (z in listOf(-HALF, HALF)) {
-                val node = Node()
-                node.renderable = ShapeFactory.makeCube(
-                    Vector3(HALF * 2, BAR_HEIGHT, BAR_THICKNESS),
-                    Vector3.zero(),
-                    material.makeCopy()
-                )
-                node.localPosition = Vector3(0f, 0f, z)
-                addChild(node)
-                sideNodes.add(node)
-            }
-            // Left and Right bars — extend along Z
-            for (x in listOf(-HALF, HALF)) {
-                val node = Node()
-                node.renderable = ShapeFactory.makeCube(
-                    Vector3(BAR_THICKNESS, BAR_HEIGHT, HALF * 2),
-                    Vector3.zero(),
-                    material.makeCopy()
-                )
-                node.localPosition = Vector3(x, 0f, 0f)
-                addChild(node)
-                sideNodes.add(node)
-            }
-        }
-    }
-
-    private fun loadUnlitMaterial(onReady: (Material) -> Unit) {
-        try {
-            val bytes = context.assets.open("unlit_color.filamat").use { it.readBytes() }
-            val buffer = java.nio.ByteBuffer.wrap(bytes)
-            Material.builder()
-                .setSource(buffer)
-                .build()
-                .thenAccept { material ->
-                    material.setFloat4("baseColor", 1f, 1f, 1f, 1f)
-                    try { material.setFloat(MaterialFactory.MATERIAL_METALLIC, 0f) } catch (_: Exception) {}
-                    try { material.setFloat(MaterialFactory.MATERIAL_ROUGHNESS, 1f) } catch (_: Exception) {}
-                    try { material.setFloat(MaterialFactory.MATERIAL_REFLECTANCE, 0f) } catch (_: Exception) {}
-                    onReady(material)
+        MaterialFactory.makeOpaqueWithColor(context, Color(1f, 1f, 1f, 1f))
+            .thenAccept { material ->
+                val barCenter = Vector3(0f, BAR_HEIGHT / 2f, 0f)
+                // Top and Bottom bars — extend along X
+                for (z in listOf(-HALF, HALF)) {
+                    val node = Node()
+                    node.renderable = ShapeFactory.makeCube(
+                        Vector3(HALF * 2, BAR_HEIGHT, BAR_THICKNESS),
+                        barCenter,
+                        material.makeCopy()
+                    )
+                    node.localPosition = Vector3(0f, 0f, z)
+                    addChild(node)
+                    sideNodes.add(node)
                 }
-                .exceptionally {
-                    MaterialFactory.makeOpaqueWithColor(context, Color(1f, 1f, 1f, 1f))
-                        .thenAccept(onReady)
-                    null
+                // Left and Right bars — extend along Z
+                for (x in listOf(-HALF, HALF)) {
+                    val node = Node()
+                    node.renderable = ShapeFactory.makeCube(
+                        Vector3(BAR_THICKNESS, BAR_HEIGHT, HALF * 2),
+                        barCenter,
+                        material.makeCopy()
+                    )
+                    node.localPosition = Vector3(x, 0f, 0f)
+                    addChild(node)
+                    sideNodes.add(node)
                 }
-        } catch (e: Exception) {
-            MaterialFactory.makeOpaqueWithColor(context, Color(1f, 1f, 1f, 1f))
-                .thenAccept(onReady)
-        }
+            }
     }
 
     fun updateFromFrame(frame: Frame, sceneView: ArSceneView) {
         val hit = getCenterHitResult(frame, sceneView)
         if (hit != null) {
             isEnabled = true
-            worldPosition = Vector3(hit.hitPose.tx(), hit.hitPose.ty(), hit.hitPose.tz())
+            worldPosition = Vector3(
+                hit.hitPose.tx(),
+                hit.hitPose.ty() + 0.002f,
+                hit.hitPose.tz()
+            )
             worldRotation = Quaternion(
                 hit.hitPose.qx(),
                 hit.hitPose.qy(),

@@ -19,6 +19,20 @@ const config = {
   // We need to make sure that only one version is loaded for peerDependencies
   // So we block them at the root, and alias them to the versions in example's node_modules
   resolver: {
+    // Ensure we never resolve dependencies from the library root `node_modules/`.
+    // This avoids loading multiple copies of `react-native` / `react`, which can
+    // manifest as "NativeModules/NativeModule ... of undefined" at runtime.
+    disableHierarchicalLookup: true,
+    nodeModulesPaths: [path.join(__dirname, 'node_modules')],
+
+    // Metro >= 0.76 uses `blockList` (old name was `blacklistRE`)
+    blockList: exclusionList(
+      modules.map(
+        (m) =>
+          new RegExp(`^${escape(path.join(root, 'node_modules', m))}\\/.*$`)
+      )
+    ),
+    // Keep backward-compat (harmless if ignored)
     blacklistRE: exclusionList(
       modules.map(
         (m) =>
