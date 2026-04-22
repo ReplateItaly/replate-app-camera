@@ -21,13 +21,13 @@ type ReplateCameraProps = {
 const ComponentName = 'ReplateCameraView';
 
 export const ReplateCameraView =
-  UIManager.getViewManagerConfig(ComponentName) != null
+  UIManager?.getViewManagerConfig?.(ComponentName) != null
     ? requireNativeComponent<ReplateCameraProps>(ComponentName)
     : () => {
         throw new Error(LINKING_ERROR);
       };
 
-export const ReplateCameraModule = NativeModules.ReplateCameraController
+export const ReplateCameraModule = NativeModules?.ReplateCameraController
   ? NativeModules.ReplateCameraController
   : new Proxy(
       {},
