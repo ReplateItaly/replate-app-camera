@@ -10,6 +10,7 @@ import com.google.ar.core.Trackable
 import com.google.ar.core.exceptions.CameraNotAvailableException
 import com.google.ar.core.exceptions.DeadlineExceededException
 import com.google.ar.core.exceptions.FatalException
+import com.google.ar.core.exceptions.MissingGlContextException
 import com.google.ar.core.exceptions.NotYetAvailableException
 import com.google.ar.sceneform.ArSceneView
 import com.google.ar.sceneform.rendering.CameraStream
@@ -75,8 +76,21 @@ class SafeArSceneView @JvmOverloads constructor(
       var shouldUpdate = true
 
       if (!fieldHasSetTextureNames.getBoolean(this)) {
-        session.setCameraTextureName(cameraTextureId)
-        fieldHasSetTextureNames.setBoolean(this, true)
+        // Texture name 0 is invalid for ARCore → avoid IllegalArgumentException
+        if (cameraTextureId == 0) return false
+        try {
+          session.setCameraTextureName(cameraTextureId)
+          fieldHasSetTextureNames.setBoolean(this, true)
+        } catch (e: IllegalArgumentException) {
+          Log.w(TAG, "Illegal argument while setting ARCore texture name", e)
+          return false
+        } catch (e: IllegalStateException) {
+          Log.w(TAG, "Illegal state while setting ARCore texture name", e)
+          return false
+        } catch (t: Throwable) {
+          Log.w(TAG, "Unexpected error while setting ARCore texture name", t)
+          return false
+        }
       }
 
       val frame: Frame = try {
@@ -84,11 +98,23 @@ class SafeArSceneView @JvmOverloads constructor(
       } catch (e: CameraNotAvailableException) {
         Log.w(TAG, "Exception updating ARCore session", e)
         return false
+      } catch (e: MissingGlContextException) {
+        Log.w(TAG, "Missing GL context while updating ARCore session", e)
+        return false
       } catch (e: DeadlineExceededException) {
         Log.w(TAG, "Exception updating ARCore session", e)
         return false
       } catch (e: FatalException) {
         Log.w(TAG, "Exception updating ARCore session", e)
+        return false
+      } catch (e: IllegalArgumentException) {
+        Log.w(TAG, "Illegal argument while updating ARCore session", e)
+        return false
+      } catch (e: IllegalStateException) {
+        Log.w(TAG, "Illegal state while updating ARCore session", e)
+        return false
+      } catch (t: Throwable) {
+        Log.w(TAG, "Unexpected error updating ARCore session", t)
         return false
       }
 
@@ -100,7 +126,7 @@ class SafeArSceneView @JvmOverloads constructor(
       fieldCurrentFrame.set(this, frame)
       fieldCurrentFrameTimestamp.set(this, frame.timestamp)
 
-      val camera = frame.camera ?: return false
+      val camera = frame.camera
 
       val cameraStream = cameraStream
       if (!cameraStream.isTextureInitialized) {

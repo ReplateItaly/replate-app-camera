@@ -10,8 +10,11 @@ import com.google.ar.sceneform.Node
 import com.google.ar.sceneform.math.Quaternion
 import com.google.ar.sceneform.math.Vector3
 import com.google.ar.sceneform.rendering.Color
+import com.google.ar.sceneform.rendering.Material
 import com.google.ar.sceneform.rendering.MaterialFactory
+import com.google.ar.sceneform.rendering.Renderable
 import com.google.ar.sceneform.rendering.ShapeFactory
+import com.google.android.filament.MaterialInstance
 import kotlin.math.sqrt
 
 /**
@@ -43,29 +46,56 @@ class FocusNode(private val context: Context) : Node() {
                 val barCenter = Vector3(0f, BAR_HEIGHT / 2f, 0f)
                 // Top and Bottom bars — extend along X
                 for (z in listOf(-HALF, HALF)) {
+                    val barMaterial = material.makeCopy().also { makeAlwaysVisible(it) }
                     val node = Node()
-                    node.renderable = ShapeFactory.makeCube(
-                        Vector3(HALF * 2, BAR_HEIGHT, BAR_THICKNESS),
-                        barCenter,
-                        material.makeCopy()
-                    )
+                    node.renderable =
+                        ShapeFactory.makeCube(
+                            Vector3(HALF * 2, BAR_HEIGHT, BAR_THICKNESS),
+                            barCenter,
+                            barMaterial
+                        ).apply {
+                            renderPriority = Renderable.RENDER_PRIORITY_LAST
+                            isShadowCaster = false
+                            isShadowReceiver = false
+                        }
                     node.localPosition = Vector3(0f, 0f, z)
                     addChild(node)
                     sideNodes.add(node)
                 }
                 // Left and Right bars — extend along Z
                 for (x in listOf(-HALF, HALF)) {
+                    val barMaterial = material.makeCopy().also { makeAlwaysVisible(it) }
                     val node = Node()
-                    node.renderable = ShapeFactory.makeCube(
-                        Vector3(BAR_THICKNESS, BAR_HEIGHT, HALF * 2),
-                        barCenter,
-                        material.makeCopy()
-                    )
+                    node.renderable =
+                        ShapeFactory.makeCube(
+                            Vector3(BAR_THICKNESS, BAR_HEIGHT, HALF * 2),
+                            barCenter,
+                            barMaterial
+                        ).apply {
+                            renderPriority = Renderable.RENDER_PRIORITY_LAST
+                            isShadowCaster = false
+                            isShadowReceiver = false
+                        }
                     node.localPosition = Vector3(x, 0f, 0f)
                     addChild(node)
                     sideNodes.add(node)
                 }
             }
+    }
+
+    private fun makeAlwaysVisible(material: Material) {
+        // Best-effort: Sceneform doesn't expose depth state publicly.
+        // If this fails, the focus node will behave like any other object (may be occluded).
+        try {
+            val m = material.javaClass.getDeclaredMethod("getFilamentMaterialInstance").apply {
+                isAccessible = true
+            }
+            val filament = m.invoke(material) as? MaterialInstance ?: return
+            filament.setDepthCulling(false)
+            filament.setDepthWrite(false)
+        } catch (_: Throwable) {
+            // ignore
+        }
     }
 
     fun updateFromFrame(frame: Frame, sceneView: ArSceneView) {
