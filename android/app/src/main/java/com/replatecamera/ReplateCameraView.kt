@@ -556,12 +556,16 @@ class ReplateCameraView @JvmOverloads constructor(
         sceneView._lightEstimationConfig = LightEstimationConfig.DISABLED
         sceneView.session?.let { applySessionConfiguration(it) }
         updatePlaneRendererState(sceneView, planeTrackingEnabled)
-        registerSensorListener()
-        sceneView.scene.addOnUpdateListener(this)
-        isSessionPaused = false
-        logI("INIT [1/4] listeners activated isSessionPaused=false")
+        // React Native does not guarantee an immediate onHostResume() callback when this view is
+        // attached while the app is already in the foreground (or after resetSession()).
+        // Keep the session logically paused and explicitly resume once the view is ready so
+        // sceneView.arFrame becomes non-null and FocusNode starts updating.
+        isSessionPaused = true
+        logI("INIT [1/4] configured isSessionPaused=true; posting resumeSession()")
+        post { resumeSession() }
       } catch (e: Exception) {
-        logE("INIT [1/4] FAILED to activate listeners", e)
+        isSessionPaused = true
+        logE("INIT [1/4] FAILED to configure session; will retry resume", e)
         scheduleResumeRetry(200)
       }
 
