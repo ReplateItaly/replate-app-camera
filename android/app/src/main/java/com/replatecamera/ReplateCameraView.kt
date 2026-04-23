@@ -127,6 +127,7 @@ class ReplateCameraView @JvmOverloads constructor(
   private var anchorContentNode: Node? = null
   private var isSessionPaused = true
   @Volatile var captureActive = false
+  @Volatile private var captureRequested = false
   private var isViewAttached = false
   private var sensorManager: android.hardware.SensorManager? = null
   private var gravitySensor: android.hardware.Sensor? = null
@@ -1614,8 +1615,10 @@ class ReplateCameraView @JvmOverloads constructor(
     }
     if (!isSessionPaused) {
       logD("resumeSession ignored: already resumed")
-      capturedPhotoPaths.clear()
-      captureActive = true
+      if (captureRequested) {
+        capturedPhotoPaths.clear()
+        captureActive = true
+      }
       return
     }
     logI("RESUME [start]")
@@ -1654,9 +1657,9 @@ class ReplateCameraView @JvmOverloads constructor(
       sceneView.scene.addOnUpdateListener(this)
 
       isSessionPaused = false
-      captureActive = true
+      captureActive = captureRequested
       expectingFirstFrame = true
-      logI("RESUME [success] isSessionPaused=false captureActive=true")
+      logI("RESUME [success] isSessionPaused=false captureActive=$captureActive captureRequested=$captureRequested")
     } catch (e: CameraNotAvailableException) {
       // If the anchor is already placed, don't close the session — that would lose
       // all node positions. Just wait and retry; tracking will resume when the camera
@@ -1763,6 +1766,8 @@ class ReplateCameraView @JvmOverloads constructor(
       selectedCameraSessionHash = null
       gestureRoutingInstalled = false
       isSessionPaused = true
+      captureActive = false
+      captureRequested = false
       
       highQualityCapture.stop()
       logI("Resources cleaned up")
@@ -1809,6 +1814,7 @@ class ReplateCameraView @JvmOverloads constructor(
       anchorDetachedForDrag = false
       anchorDragInProgress = false
       captureActive = false
+      captureRequested = false
       selectedCameraSessionHash = null
       gestureRoutingInstalled = false
 
@@ -1846,10 +1852,12 @@ class ReplateCameraView @JvmOverloads constructor(
   
   // Public wrapper methods for module access
   fun pauseSessionPublic() {
+    captureRequested = false
     pauseSession()
   }
   
   fun resumeSessionPublic() {
+    captureRequested = true
     resumeSession()
   }
   
