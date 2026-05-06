@@ -176,6 +176,8 @@ class ReplateCameraController(
         try {
             val exif = ExifInterface(uri.path!!)
             exif.setAttribute(ExifInterface.TAG_USER_COMMENT, json)
+            // Mirror into ImageDescription for broader EXIF reader compatibility.
+            exif.setAttribute(ExifInterface.TAG_IMAGE_DESCRIPTION, json)
             exif.saveAttributes()
         } catch (e: Exception) {
             Log.e(TAG, "Error saving EXIF data", e)

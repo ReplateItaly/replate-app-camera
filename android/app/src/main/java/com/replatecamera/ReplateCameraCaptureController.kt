@@ -241,6 +241,10 @@ class ReplateCameraCaptureController(
         try {
             val exif = ExifInterface(uri.path!!)
             exif.setAttribute(ExifInterface.TAG_USER_COMMENT, json)
+            // Some EXIF readers (especially outside Android) have trouble decoding UserComment
+            // due to its encoding header semantics. Mirror the payload into ImageDescription
+            // (ASCII) to make the metadata easier to recover server-side.
+            exif.setAttribute(ExifInterface.TAG_IMAGE_DESCRIPTION, json)
             exif.saveAttributes()
         } catch (e: Exception) {
             logE("Error saving EXIF data", e)
